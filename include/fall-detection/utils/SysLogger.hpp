@@ -51,9 +51,9 @@ namespace fall_detection
 }
 
 // 全局宏定义
-#define LOG_TRACE(...)    SPDLOG_LOGGER_TRACE(fall_gateway::utils::SysLogger::getInstance().getLogger(), __VA_ARGS__)
-#define LOG_DEBUG(...)    SPDLOG_LOGGER_DEBUG(fall_gateway::utils::SysLogger::getInstance().getLogger(), __VA_ARGS__)
-#define LOG_INFO(...)     SPDLOG_LOGGER_INFO(fall_gateway::utils::SysLogger::getInstance().getLogger(), __VA_ARGS__)
-#define LOG_WARN(...)     SPDLOG_LOGGER_WARN(fall_gateway::utils::SysLogger::getInstance().getLogger(), __VA_ARGS__)
-#define LOG_ERROR(...)    SPDLOG_LOGGER_ERROR(fall_gateway::utils::SysLogger::getInstance().getLogger(), __VA_ARGS__)
-#define LOG_CRITICAL(...) SPDLOG_LOGGER_CRITICAL(fall_gateway::utils::SysLogger::getInstance().getLogger(), __VA_ARGS__)
+#define LOG_TRACE(...)    SPDLOG_LOGGER_TRACE(fall_detection::utils::SysLogger::getInstance().getLogger(), __VA_ARGS__)
+#define LOG_DEBUG(...)    SPDLOG_LOGGER_DEBUG(fall_detection::utils::SysLogger::getInstance().getLogger(), __VA_ARGS__)
+#define LOG_INFO(...)     SPDLOG_LOGGER_INFO(fall_detection::utils::SysLogger::getInstance().getLogger(), __VA_ARGS__)
+#define LOG_WARN(...)     SPDLOG_LOGGER_WARN(fall_detection::utils::SysLogger::getInstance().getLogger(), __VA_ARGS__)
+#define LOG_ERROR(...)    SPDLOG_LOGGER_ERROR(fall_detection::utils::SysLogger::getInstance().getLogger(), __VA_ARGS__)
+#define LOG_CRITICAL(...) SPDLOG_LOGGER_CRITICAL(fall_detection::utils::SysLogger::getInstance().getLogger(), __VA_ARGS__)

@@ -1,9 +1,9 @@
-#include "fall-detection-gateway/utils/SysLogger.hpp"
+#include "fall-detection/utils/SysLogger.hpp"
 
 #include <vector>
 #include <iostream>
 
-namespace fall_gateway
+namespace fall_detection
 {
     namespace utils
     {

@@ -12,3 +12,4 @@ hello_gateway
 .DS_Store
 Thumbs.db
 
+logs/
