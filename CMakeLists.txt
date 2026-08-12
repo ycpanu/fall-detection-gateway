@@ -7,6 +7,7 @@ set(OpenCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/sysroot/usr/lib/aarch64-linux-gnu/cm
 
 #寻找 Sysroot 里的 OpenCV 库
 find_package(OpenCV REQUIRED)
+find_package(Threads REQUIRED)
 
 # 通过源码编译获取 fmt 和 spdlog，避免依赖 sysroot 中缺失的 .so 文件
 include(FetchContent)
@@ -26,13 +27,21 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(spdlog)
 
 #包含 OpenCV 和项目头文件路径
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include ${OpenCV_INCLUDE_DIRS})
-
+include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/include 
+    ${OpenCV_INCLUDE_DIRS}
+    ${CMAKE_CURRENT_SOURCE_DIR}/sysroot/usr/include
+    )
+# 动态库
+link_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/sysroot/usr/lib
+)
 #指定生成可执行文件
 add_executable(fall_gateway 
     apps/main.cpp
     src/utils/SysLogger.cpp
     src/vision/CameraStreamer.cpp
+    src/vision/RKNNInferencer.cpp
     )
 
 #链接核心动态库
@@ -41,6 +50,8 @@ target_link_libraries(fall_gateway
     spdlog::spdlog
     pthread
     ${OpenCV_LIBS}
+    rknnrt
+    Threads::Threads
 )
 
 # 允许共享库中存在未解析符号——这些符号在目标设备运行时由设备上的系统库提供
