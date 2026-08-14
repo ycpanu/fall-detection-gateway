@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.14)
 project(FallDetectionGateway)
 
-#设置 C++ 标准为 14 ，适应后续 OpenCV 和多线程需求
-set(CMAKE_CXX_STANDARD 14)
+#设置 C++ 标准为 17 ，paho-mqtt-cpp 依赖 std::string_view/std::variant 等 C++17 特性
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(OpenCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/sysroot/usr/lib/aarch64-linux-gnu/cmake/opencv4")
 
 #寻找 Sysroot 里的 OpenCV 库
@@ -36,23 +37,26 @@ include_directories(
 link_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/sysroot/usr/lib
 )
+#输出目录：可执行文件 -> bin，动态链接库 -> build/lib
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+
 #指定生成可执行文件
-add_executable(fall_gateway 
-    apps/main.cpp
-    src/utils/SysLogger.cpp
-    src/vision/CameraStreamer.cpp
-    src/vision/RKNNInferencer.cpp
-    )
+file(GLOB_RECURSE SRC_FILES "src/*.cpp")
+add_executable(fall_detection_gateway apps/main.cpp ${SRC_FILES})
 
 #链接核心动态库
-target_link_libraries(fall_gateway
+target_link_libraries(fall_detection_gateway
     PRIVATE
     spdlog::spdlog
     pthread
     ${OpenCV_LIBS}
+    ${RKNN_LIB}
     rknnrt
+    paho-mqttpp3
+    paho-mqtt3a
     Threads::Threads
 )
 
 # 允许共享库中存在未解析符号——这些符号在目标设备运行时由设备上的系统库提供
-target_link_options(fall_gateway PRIVATE -Wl,--allow-shlib-undefined)
+target_link_options(fall_detection_gateway PRIVATE -Wl,--allow-shlib-undefined)

@@ -13,4 +13,4 @@ fall_gateway
 Thumbs.db
 
 logs/
-libs/
+lib/
