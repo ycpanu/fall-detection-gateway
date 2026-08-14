@@ -3,7 +3,7 @@ build/
 
 # 交叉编译所需的目标机系统根目录
 sysroot/
-hello_gateway
+fall_gateway
 
 # VS Code 本地编辑器配置
 .vscode/

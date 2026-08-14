@@ -101,13 +101,13 @@ namespace fall_detection
             memset(&outputAttrs_[i], 0, sizeof(rknn_tensor_attr));
             outputAttrs_[i].index = i;
             rknn_query(ctx_, RKNN_QUERY_OUTPUT_ATTR, &(outputAttrs_[i]), sizeof(rknn_tensor_attr));
-
-            LOG_INFO("成功加载 RKNN 模型！模型期望输入尺寸：宽={} 高={} 通道={}",inputAttrs_[0].dims[1], inputAttrs_[0].dims[2], inputAttrs_[0].dims[3]);
-
-            isInitialized_ = true;
-            return true;
         }
+        LOG_INFO("成功加载 RKNN 模型！模型期望输入尺寸：宽={} 高={} 通道={}",inputAttrs_[0].dims[1], inputAttrs_[0].dims[2], inputAttrs_[0].dims[3]);
+
+        isInitialized_ = true;
+        return true;
     }
+
     bool RKNNInferencer::detect(const cv::Mat& frame, std::vector<DetectResult>& results)
     {
         if (!isInitialized_)

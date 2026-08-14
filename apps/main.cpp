@@ -6,68 +6,71 @@
 #include "fall-detection/utils/SysLogger.hpp"
 #include "fall-detection/concurrency/ThreadSafeQueue.hpp"
 #include "fall-detection/vision/CameraStreamer.hpp"
+#include "fall-detection/vision/RKNNInferencer.hpp"
 
 using namespace fall_detection;
 
-int main(int argc, char** argv)
+int main(int argc, char* argv[])
 {
+    // 1. 初始化全局日志系统
     utils::SysLogger::getInstance().init("logs/gateway.log");
 
-    LOG_INFO("===========================================");
-    LOG_INFO("边缘网关系统启动");
-    LOG_INFO("===========================================");
+    LOG_INFO("=======================================");
+    LOG_INFO("系统启动");
+    LOG_INFO("=======================================");
 
-    // 2. 实例化底层通信
-    // 设定队列最大容量为 3
-    concurrency::ThreadSafeQueue<cv::Mat> frameQueue(3);
-
-    // 3. 实例化并启动视频采集线程
-    CameraStreamer streamer(0, frameQueue);
-    if (!streamer.start())
+    // 2. 加载 NPU 模型
+    RKNNInferencer inferencer("./best.rknn");
+    if (!inferencer.init())
     {
-        LOG_ERROR("摄像头启动失败！请检查 USB 摄像头是否正确连接到开发板");
+        LOG_ERROR("NPU 模型加载失败，请检查 best.rknn 是否推送到开发板同级目录下！");
         return -1;
     }
 
-    LOG_INFO("主线程：准备从队列中获取图像...");
+    // 3. 实例化底层通信，容量设为 3 帧，防视频流卡顿延迟
+    concurrency::ThreadSafeQueue<cv::Mat> frameQueue(3);
 
-    // 4. 模拟 AI 推理主循环
+    // 4. 启动视频采集线程，设备号：0
+    CameraStreamer streamer(0, frameQueue);
+    if (!streamer.start())
+    {
+        LOG_ERROR("摄像头启动失败！");
+        return -1;
+    }
+
+    LOG_INFO("主线程：准备将图像给 NPU 进行极速推理...");
+
     int testFrameCount = 0;
-    const int MAX_TEST_FRAMES = 50; //测试拉取 50 帧后自动安全退出
+    const int MAX_TEST_FRAMES = 50;
 
-    while (testFrameCount < MAX_TEST_FRAMES)
+    while(testFrameCount < MAX_TEST_FRAMES)
     {
         cv::Mat currentFrame;
 
-        // 阻塞等待，直到采集线程 push 新画面唤醒它，实现零 CPU 轮询空转
+        // 阻塞等待采集线程抓取的新画面（零 CPU 轮询）
         frameQueue.wait_and_pop(currentFrame);
 
-        if (!currentFrame.empty())
+        testFrameCount++;
+
+        // 记录推理前系统时间，用于精准测速
+        auto start_time = std::chrono::high_resolution_clock::now();
+
+        std::vector<DetectResult> results;
+        if (inferencer.detect(currentFrame, results))
         {
-            testFrameCount++;
-            LOG_INFO("成功获取第{}帧，分辨率：{}x{}，通道数：{}", testFrameCount, currentFrame.cols, currentFrame.rows, currentFrame.channels());
+            // 计算纯 NPU 硬件耗时
+            auto end_time = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-            // 把第 10 帧真正保存到磁盘上，证明摄像头确实抓到了画面
-            if (testFrameCount == 10)
-            {
-                std::string savePath = "test_capture.jpg";
-                cv::imwrite(savePath, currentFrame);
-                LOG_INFO(">>> 已将第 10 帧画面保存至当权目录的{}，请在测试结束后查看。<<<",savePath);
-            }
+            LOG_INFO("第 {} 帧 NPU 推理完成！硬件耗时 {} ms，发现目标数：{}", testFrameCount, duration.count(), results.size());
         }
-
-        // 模拟边缘 AI 推理硬件加速推理的耗时（假设 NPU 推理需要 100 毫秒）
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
     }
 
-    // 5. 关闭系统，释放硬件资源
-    LOG_INFO("测试帧数达到设定值，准备执行关闭");
+    // 5. 关闭系统
     streamer.stop();
 
-    LOG_INFO("==========================================");
-    LOG_INFO("关闭系统");
-    LOG_INFO("==========================================");
-
+    LOG_INFO("======================================");
+    LOG_INFO("系统关闭！");
+    LOG_INFO("======================================");
     return 0;
 }

@@ -19,7 +19,7 @@ namespace fall_detection
         }
 
         // 尝试打开摄像头设备
-        capture_.open(deviceId_);
+        capture_.open(deviceId_, cv::CAP_V4L2);
         if (!capture_.isOpened())
         {
             LOG_ERROR("无法打开摄像头设备号：{}", deviceId_);
@@ -29,7 +29,10 @@ namespace fall_detection
         // 也可以在这里设置摄像头的分辨率，例如：
         // capture_.set(cv::CAP_PROP_FRAME_WIDTH, 640);
         // capture_.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
+        capture_.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
 
+        capture_.set(cv::CAP_PROP_FRAME_WIDTH, 640);
+        capture_.set(cv::CAP_PROP_FRAME_HEIGHT, 640);
         LOG_INFO("摄像头设备号 {} 已成功打开，准备启动采集线程...", deviceId_);
 
         // 标记运行状态并启动独立线程
