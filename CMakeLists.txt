@@ -10,6 +10,11 @@ set(OpenCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/sysroot/usr/lib/aarch64-linux-gnu/cm
 find_package(OpenCV REQUIRED)
 find_package(Threads REQUIRED)
 
+find_library(RKNN_LIB rknnrt PATHS ${CMAKE_CURRENT_LIST_DIR}/sysroot/usr/lib NO_DEFAULT_PATH)
+find_library(MQTT_CPP_LIB paho-mqttpp3 PATHS ${CMAKE_CURRENT_LIST_DIR}/sysroot/usr/lib NO_DEFAULT_PATH)
+find_library(MQTT_C_LIB paho-mqtt3a PATHS ${CMAKE_CURRENT_LIST_DIR}/sysroot/usr/lib NO_DEFAULT_PATH)
+find_library(SQLITE3_LIB sqlite3 PATHS ${CMAKE_CURRENT_LIST_DIR}/sysroot/usr/lib NO_DEFAULT_PATH)
+
 # 通过源码编译获取 fmt 和 spdlog，避免依赖 sysroot 中缺失的 .so 文件
 include(FetchContent)
 FetchContent_Declare(
@@ -49,12 +54,11 @@ add_executable(fall_detection_gateway apps/main.cpp ${SRC_FILES})
 target_link_libraries(fall_detection_gateway
     PRIVATE
     spdlog::spdlog
-    pthread
     ${OpenCV_LIBS}
     ${RKNN_LIB}
-    rknnrt
-    paho-mqttpp3
-    paho-mqtt3a
+    ${MQTT_CPP_LIB}
+    ${MQTT_C_LIB}
+    ${SQLITE3_LIB}
     Threads::Threads
 )
 

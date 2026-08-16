@@ -8,6 +8,9 @@ fall_gateway
 # VS Code 本地编辑器配置
 .vscode/
 
+# Claude Code 本地配置
+.claude/
+
 # 操作系统生成的临时文件
 .DS_Store
 Thumbs.db

@@ -10,6 +10,7 @@
 #include "fall-detection/vision/CameraStreamer.hpp"
 #include "fall-detection/vision/FallRuleEngine.hpp"
 #include "fall-detection/vision/RKNNInferencer.hpp"
+#include "fall-detection/vision/VideoCacher.hpp"
 #include "fall-detection/network/MqttClient.hpp"
 
 using namespace fall_detection;
@@ -40,7 +41,8 @@ int main(int argc, char** argv)
     concurrency::ThreadSafeQueue<vision::AlertEvent> alertQueue(10);
     
     // 5. 启动摄像头
-    CameraStreamer streamer(0, frameQueue);
+    vision::VideoCacher videoCacher(90);
+    vision::CameraStreamer streamer(0, frameQueue, videoCacher);
     if (!streamer.start())
     {
         LOG_ERROR("摄像头启动失败！");

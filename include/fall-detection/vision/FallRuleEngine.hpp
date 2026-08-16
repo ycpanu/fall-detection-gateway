@@ -18,6 +18,7 @@ namespace fall_detection
             long long timestamp;    // 发生时间戳
             int triggerBoxX;        // 触发报警时的目标中心点 X
             int triggerBoxY;        // 目标中心点 Y
+            std::string vedioPath;  // 摔倒现场视频路径
         };
 
         /**
