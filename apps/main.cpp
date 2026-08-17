@@ -8,24 +8,33 @@
 #include "fall-detection/utils/SysLogger.hpp"
 #include "fall-detection/concurrency/ThreadSafeQueue.hpp"
 #include "fall-detection/vision/CameraStreamer.hpp"
-#include "fall-detection/vision/FallRuleEngine.hpp"
-#include "fall-detection/vision/RKNNInferencer.hpp"
 #include "fall-detection/vision/VideoCacher.hpp"
+#include "fall-detection/vision/RKNNInferencer.hpp"
+#include "fall-detection/vision/FallRuleEngine.hpp"
 #include "fall-detection/network/MqttClient.hpp"
+#include "fall-detection/hardware/BuzzerController.hpp"
+#include "fall-detection/utils/LocalDatabase.hpp"
 
 using namespace fall_detection;
 
 int main(int argc, char** argv)
 {
-    // 1. 初始化全局日志系统
+    // 初始化全局日志系统
     utils::SysLogger::getInstance().init("logs/gateway.log");
     LOG_INFO("系统启动！");
+
+    // 初始化底层硬件与容灾模块
+    hardware::BuzzerController buzzer(73);
+    buzzer.init();
+
+    utils::LocalDatabase db("fall_detection.db");
+    db.init();
     
     // 初始化网络通信层
     network::MqttClient mqttClient("tcp://broker.emqx.io:1883", "Orangepi_Gateway_001");
     mqttClient.connect();
 
-    // 2. 初始化 NPU 硬件推理
+    // 初始化 NPU 硬件推理
     RKNNInferencer inferencer("./best.rknn");
     if (!inferencer.init())
     {
@@ -33,15 +42,17 @@ int main(int argc, char** argv)
         return -1;
     }
     
-    // 3. 初始化摔倒逻辑规则引擎
+    // 初始化摔倒逻辑规则引擎
     vision::FallRuleEngine ruleEngine;
 
-    // 4. 实例化底层通信
+    // 视频缓存
+    vision::VideoCacher videoCacher(90);
+
+    // 实例化底层通信队列
     concurrency::ThreadSafeQueue<cv::Mat> frameQueue(3);
     concurrency::ThreadSafeQueue<vision::AlertEvent> alertQueue(10);
     
-    // 5. 启动摄像头
-    vision::VideoCacher videoCacher(90);
+    // 线程 1：启动摄像头进行视频采集
     vision::CameraStreamer streamer(0, frameQueue, videoCacher);
     if (!streamer.start())
     {
@@ -50,6 +61,8 @@ int main(int argc, char** argv)
     }
 
     std::atomic<bool> systemRunning{true};
+
+    // 线程 2：启动报警响应线程
     std::thread alertThread([&]()
     {
         LOG_INFO("网络通信线程已启动，正在监听报警事件...");
@@ -61,69 +74,92 @@ int main(int argc, char** argv)
             alertQueue.wait_and_pop(event);
 
             if (!systemRunning) break;
+
             if (event.isFall)
             {
-                LOG_INFO("通信线程收到报警！准备数据打包 JSON 上传云端...");
+                LOG_WARN("处理报警事件！触发时间戳：{}", event.timestamp);
 
-                // 负责将 JSON 数据打包上传，同时驱动本地硬件报警
-                // 将 JSON 数据发送到特定主题
-                mqttClient.publishAlert("fall_gateway/alerts", event);
+                // 触发本地蜂鸣器
+                buzzer.triggerAlarm(3000);
 
-                // 后续加入本地蜂鸣器
+                // Store-and-Forward 机制
+                if (mqttClient.isConnected())
+                {
+                    // 网络在线，尝试续传历史积压报警事件
+                    auto pendingAlerts = db.getPendingAlerts();
+                    for (const auto& pending : pendingAlerts)
+                    {
+                        if (mqttClient.publishAlert("fall_detection/alerts", pending))
+                        {
+                            db.markAsUploaded(pending.dbId);
+                        }
+                    }
+
+                    // 发布当前的最新报警
+                    if (mqttClient.publishAlert("fall_detection/alerts", event))
+                    {
+                        LOG_INFO("报警已成功上传至云端！附带现场视频路径：{}", event.videoPath);
+                    }
+                    else
+                    {
+                        // 发送意外则本地保存
+                        db.saveAlert(event);
+                    }
+                }
+                else
+                {
+                    db.saveAlert(event);
+                }
             }
         }
     });
 
-    LOG_INFO("主线程已启动");
+    // 线程 3：主线程 AI 视觉与逻辑流水线
+    LOG_INFO("主线程已启动，系统开始运行...");
 
-    int testFrameCount = 0;
-    const int MAX_TEST_FRAMES = 500;
-    
-    while (testFrameCount < MAX_TEST_FRAMES)
+    while (systemRunning)
     {
         cv::Mat currentFrame;
-        
-        // 阻塞等待采集线程抓取的新画面
         frameQueue.wait_and_pop(currentFrame);
         
         if (!currentFrame.empty())
         {
-            testFrameCount++;
-            
-            // 进入 NPU 进行极速特征推理
             std::vector<DetectResult> aiResults;
+
+            // NPU 特征推理
             if (inferencer.detect(currentFrame, aiResults))
             {
-                // 将 AI 输出的静态特征送入规则引擎判断
                 vision::AlertEvent event;
-                bool isFallConfirmed = ruleEngine.processFrame(aiResults, event);
-
-                // 如果连续命中 lie 状态，且符合 W > H 和下坠速度阈值
-                if (isFallConfirmed)
+                
+                // 摔倒判断（高宽比 + 时序下坠速度）
+                if (ruleEngine.processFrame(aiResults, event))
                 {
-                    LOG_WARN("摔倒报警！触发中心点坐标：({},{})", event.triggerBoxX, event.triggerBoxY);
+                    LOG_WARN("摔倒事件发生！启动视频截取...");
 
+                    // 异步保存前 3 秒视频
+                    std::string videoName = "fall_record_" + std::to_string(event.timestamp) + ".mp4";
+                    videoCacher.saveVideoAsync(videoName);
+                    event.videoPath = videoName;
+
+                    // 将事件放入队列交由后台线程处理
+                    alertQueue.push(event);
                 }
             }
         }
     }
 
-    // 6. 关闭系统
-    systemRunning = false;
-
+    // 关闭系统
     streamer.stop();
 
     vision::AlertEvent dummyEvent;
     dummyEvent.isFall = false;
-    alertQueue.push(dummyEvent);
+    alertQueue.push(dummyEvent);        // 唤醒并终止预警线程
     if (alertThread.joinable())
     {
         alertThread.join();
     }
-    
-    mqttClient.disconnect();
-    
-    LOG_INFO("系统关闭！");
 
+    mqttClient.disconnect();
+    LOG_INFO("系统资源释放完毕，安全退出！");
     return 0;
 }
