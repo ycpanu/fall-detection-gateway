@@ -23,7 +23,7 @@ namespace fall_detection
 
         /**
          * @brief 摔倒规则引擎类
-         * 负责将 NPU 输出的单帧静态特征通过时序追踪和几何计算，转化为动态的摔倒过程判断
+         * 通过身体轴线角度 + 髋部下坠速度 + 时序状态机，将静态关键点转化为动态摔倒判定
          */
         class FallRuleEngine
         {
@@ -33,25 +33,29 @@ namespace fall_detection
 
                 /**
                  * @brief 处理单帧 AI 推理结果
-                 * @param aiResults NPU 这一帧识别出的人体边界框列表
+                 * @param aiResults NPU 这一帧识别出的人体（含 17 骨骼关键点）列表
                  * @param outEvent 如果判定摔倒，将报警信息写入该结构体
                  * @return true 代表认为异常摔倒，false 代表正常或过滤
                  */
                 bool processFrame(const std::vector<DetectResult>& aiResults, AlertEvent& outEvent);
 
             private:
-                // 内部状态追踪器，用于计算时序和速度
-                bool hasPreviousTarget_;                                // 上一帧是否检测到有效人体
-                int previousCenterY_;                                   // 上一帧人体中心点的 Y 坐标
-                int previousClassId_;                                   // 上一帧人体姿态类别    
-                std::chrono::steady_clock::time_point lastTime_;        // 上一帧时间戳
+                void resetState();
 
-                int lieConfirmCount_;                                   // 连续处于 lie 状态的帧技术器
+                int lieConfirmCount_;                       // 躺倒连续帧计数（防抖）
+                bool hasPreviousTarget_;                    // 上一帧是否有有效目标（用于算速度）
+                float previousHipY_;                        // 上一帧髋部中点 Y 坐标
+                std::chrono::steady_clock::time_point lastTime_;  // 上一帧时间戳
+                bool fallEventPending_;                     // 快速下坠事件是否仍在时序窗口内
+                int fallEventFrames_;                       // 下坠事件发生后经过的帧数
 
-                // 阈值配置，可根据摄像头安装高度进行调优
-                const int CONFIRM_FRAMES_THRESHOLD = 5;         // 需连续 5 帧 (约 0.3 秒) 判定为 lie 才报警
-                const float FALL_VELOCITY_THRESHOLD = 500.0f;   // Y 轴下坠速度阈值 (像素/秒)
-                const int CLASS_LIE = 1;                        // 代表 lie (模型调整)
+                // 阈值配置，可根据摄像头安装角度与高度调优
+                const int CONFIRM_FRAMES_THRESHOLD = 5;     // 下坠后需连续躺倒 5 帧才报警（约 0.17s）
+                const int STATIC_LIE_THRESHOLD = 30;        // 无下坠时持续躺倒 30 帧（约 1s）才报警（兜底）
+                const int FALL_EVENT_WINDOW = 15;           // 快速下坠事件的有效窗口（帧，约 0.5s）
+                const float KPT_CONF_THRESHOLD = 0.3f;      // 关键点置信度阈值（低于视为不可见）
+                const float FALL_ANGLE_THRESHOLD = 60.0f;   // 身体轴线(肩→髋)与垂直方向夹角阈值（度）
+                const float FALL_VELOCITY_THRESHOLD = 400.0f; // 髋部下坠速度阈值（像素/秒）
         };
-    };
+    }
 }

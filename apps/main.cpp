@@ -72,7 +72,7 @@ int main(int argc, char** argv)
     mqttClient.connect();
 
     // 初始化 NPU 硬件推理
-    RKNNInferencer inferencer("./best.rknn");
+    vision::RKNNInferencer inferencer("./best.rknn");
     if (!inferencer.init())
     {
         LOG_ERROR("NPU 模型加载失败！");
@@ -173,7 +173,7 @@ int main(int argc, char** argv)
 
         if (!currentFrame.empty())
         {
-            std::vector<DetectResult> aiResults;
+            std::vector<vision::DetectResult> aiResults;
 
             // NPU 特征推理
             if (inferencer.detect(currentFrame, aiResults))

@@ -8,112 +8,158 @@ namespace fall_detection
 {
     namespace vision
     {
-        FallRuleEngine::FallRuleEngine() : hasPreviousTarget_(false), previousCenterY_(0), previousClassId_(-1), lieConfirmCount_(0)
+        FallRuleEngine::FallRuleEngine()
+            : lieConfirmCount_(0), hasPreviousTarget_(false), previousHipY_(0.0f),
+              fallEventPending_(false), fallEventFrames_(0)
         {
             lastTime_ = std::chrono::steady_clock::now();
         }
 
+        void FallRuleEngine::resetState()
+        {
+            hasPreviousTarget_ = false;
+            lieConfirmCount_ = 0;
+            fallEventPending_ = false;
+            fallEventFrames_ = 0;
+        }
+
         bool FallRuleEngine::processFrame(const std::vector<DetectResult>& aiResults, AlertEvent& outEvent)
         {
-            // 1. 如果当前帧没有检测到任何人，重置追踪状态
+            outEvent.isFall = false;
+
+            // COCO 17 关键点索引（YOLOv8-Pose 标准）
+            constexpr int L_SHOULDER = 5;
+            constexpr int R_SHOULDER = 6;
+            constexpr int L_HIP = 11;
+            constexpr int R_HIP = 12;
+
+            // 1. 当前帧没检测到人 → 重置
             if (aiResults.empty())
             {
-                hasPreviousTarget_ = false;
-                lieConfirmCount_ = 0;
+                resetState();
                 return false;
             }
 
-            // 2. 锁定监控目标：找到画面中置信度最高的目标
-            DetectResult target = aiResults[0];
+            // 2. 取置信度最高的目标
+            const DetectResult* target = &aiResults[0];
             for (const auto& res : aiResults)
             {
-                if (res.confidence > target.confidence)
-                {
-                    target = res;
-                }
+                if (res.confidence > target->confidence) target = &res;
             }
 
-            // 3. 提取目标的物理几何特征
-            // 计算目标外接矩形的中心点 Y 坐标
-            int currentCenterY = target.y + target.height / 2;
-            int currentCenterX = target.x + target.width / 2;
+            // 3. 关键点数量不足 → 重置
+            if (target->keypoints.size() < 17)
+            {
+                resetState();
+                return false;
+            }
 
-            // 校验：宽 > 高，说明人体处于横向状态
-            bool isAspectRatioFall = (target.width > target.height);
+            const auto& kp = target->keypoints;
 
-            // 4. 计算时间差与 Y 轴下坠速度
+            // 4. 肩、髋可见性检查
+            bool hasShoulder = kp[L_SHOULDER].confidence > KPT_CONF_THRESHOLD ||
+                               kp[R_SHOULDER].confidence > KPT_CONF_THRESHOLD;
+            bool hasHip = kp[L_HIP].confidence > KPT_CONF_THRESHOLD ||
+                          kp[R_HIP].confidence > KPT_CONF_THRESHOLD;
+            if (!hasShoulder || !hasHip)
+            {
+                resetState();
+                return false;
+            }
+
+            // 5. 计算肩中点与髋中点（两侧都可见则取平均，否则取可见侧）
+            float shoulderX = 0.0f, shoulderY = 0.0f;
+            int shoulderCnt = 0;
+            if (kp[L_SHOULDER].confidence > KPT_CONF_THRESHOLD) { shoulderX += kp[L_SHOULDER].x; shoulderY += kp[L_SHOULDER].y; ++shoulderCnt; }
+            if (kp[R_SHOULDER].confidence > KPT_CONF_THRESHOLD) { shoulderX += kp[R_SHOULDER].x; shoulderY += kp[R_SHOULDER].y; ++shoulderCnt; }
+            shoulderX /= shoulderCnt;
+            shoulderY /= shoulderCnt;
+
+            float hipX = 0.0f, hipY = 0.0f;
+            int hipCnt = 0;
+            if (kp[L_HIP].confidence > KPT_CONF_THRESHOLD) { hipX += kp[L_HIP].x; hipY += kp[L_HIP].y; ++hipCnt; }
+            if (kp[R_HIP].confidence > KPT_CONF_THRESHOLD) { hipX += kp[R_HIP].x; hipY += kp[R_HIP].y; ++hipCnt; }
+            hipX /= hipCnt;
+            hipY /= hipCnt;
+
+            // 6. 身体轴线（肩→髋）与垂直方向夹角
+            float dx = hipX - shoulderX;
+            float dy = hipY - shoulderY;
+            float angle = std::atan2(std::fabs(dx), std::fabs(dy)) * 180.0 / 3.14159265358979;
+
+            // 7. 计算髋部下坠速度（图像 y 向下，下坠时 hipY 增大 → 速度为正）
             auto currentTime = std::chrono::steady_clock::now();
             float velocityY = 0.0f;
-
             if (hasPreviousTarget_)
             {
-                // 计算两帧之间的时间
-                std::chrono::duration<float> timeDelta = currentTime - lastTime_;
-                float dt = timeDelta.count();
-
-                // 防止高并发下的除以零异常
+                float dt = std::chrono::duration<float>(currentTime - lastTime_).count();
                 if (dt > 0.001f)
                 {
-                    // 计算 Y 轴位移差，并得出瞬时下坠速度
-                    float distanceY = static_cast<float>(currentCenterY - previousCenterY_);
-                    velocityY = distanceY / dt;
+                    velocityY = (hipY - previousHipY_) / dt;
                 }
             }
 
-            // 5. 更新内部历史状态
+            // 更新历史状态
             hasPreviousTarget_ = true;
-            previousCenterY_ = currentCenterY;
-            previousClassId_ = target.classId;
+            previousHipY_ = hipY;
             lastTime_ = currentTime;
 
-            // 6. 核心摔倒判定规则
-            // 条件 1：AI 静态特征判定当前姿势为 lie 
-            // 条件 2：物理几何特征满足高宽比
-            if (target.classId == CLASS_LIE && isAspectRatioFall)
+            // 8. 快速下坠事件检测（进入时序窗口）
+            if (velocityY > FALL_VELOCITY_THRESHOLD)
             {
-                // 条件 3：如果伴随极速下坠，或者我们已经处于持续躺下读秒状态
-                if (velocityY > FALL_VELOCITY_THRESHOLD || lieConfirmCount_ > 0)
+                fallEventPending_ = true;
+                fallEventFrames_ = 0;
+                LOG_TRACE("检测到快速下坠！髋部速度 {:.1f} px/s", velocityY);
+            }
+
+            // 9. 时序窗口维护：下坠事件超过窗口则失效
+            if (fallEventPending_)
+            {
+                fallEventFrames_++;
+                if (fallEventFrames_ > FALL_EVENT_WINDOW)
                 {
-                    lieConfirmCount_++;
-                    LOG_TRACE("貌似摔倒！当前连续确认帧数：{}，瞬时下坠速度：{:.2f} px/s",lieConfirmCount_, velocityY);
-
+                    fallEventPending_ = false;
                 }
+            }
 
-                // 边缘兜底逻辑：即使没有捕抓到极速下坠瞬间，只要符合平躺且姿势异常，强制开始计数
-                else if (lieConfirmCount_ == 0)
-                {
-                    lieConfirmCount_++;
-                }
-
-                // 最终判定：如果连续 N 帧都确认时 lie 状态
-                if (lieConfirmCount_ >= CONFIRM_FRAMES_THRESHOLD)
-                {
-                    LOG_WARN("触发报警！目标中心坐标：（{}, {}）", currentCenterX, currentCenterY);
-
-                    // 封装报警事件数据，准备上报 MQTT
-                    outEvent.isFall = true;
-                    outEvent.triggerBoxX = currentCenterX;
-                    outEvent.triggerBoxY = currentCenterY;
-                    outEvent.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::system_clock::now().time_since_epoch()).count();
-                    
-                    // 重置计数器
-                    lieConfirmCount_ = 0;
-                    return true;
-                }
+            // 10. 躺倒判定（身体轴线角度）
+            if (angle > FALL_ANGLE_THRESHOLD)
+            {
+                lieConfirmCount_++;
+                LOG_TRACE("疑似摔倒！身体倾角 {:.1f}°，连续帧数 {}", angle, lieConfirmCount_);
             }
             else
             {
-                // 状态突变解除：如果当前帧不是 lie，或者人姿势变化，瞬间清零防抖计数器
                 if (lieConfirmCount_ > 0)
                 {
-                        LOG_INFO("目标状态恢复，警报解除");
-                        lieConfirmCount_ = 0;
+                    LOG_INFO("目标姿态恢复，警报解除");
                 }
+                lieConfirmCount_ = 0;
             }
 
-            // 如果未命中完整摔倒规则，默认返回安全状态
-            outEvent.isFall = false;
+            // 11. 报警判定
+            // 路径 A：快速下坠 + 连续躺倒确认（动态摔倒）
+            bool dynamicFall = fallEventPending_ && lieConfirmCount_ >= CONFIRM_FRAMES_THRESHOLD;
+            // 路径 B：持续躺倒（静态兜底，可能没抓到下坠瞬间）
+            bool staticLie = lieConfirmCount_ >= STATIC_LIE_THRESHOLD;
+
+            if (dynamicFall || staticLie)
+            {
+                int centerX = target->x + target->width / 2;
+                int centerY = target->y + target->height / 2;
+                LOG_WARN("触发报警！身体倾角 {:.1f}°，下坠速度 {:.1f} px/s，目标中心（{}, {}）",
+                         angle, velocityY, centerX, centerY);
+
+                outEvent.isFall = true;
+                outEvent.triggerBoxX = centerX;
+                outEvent.triggerBoxY = centerY;
+                outEvent.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+
+                resetState();
+                return true;
+            }
+
             return false;
         }
     }

@@ -11,7 +11,7 @@ if __name__ == "__main__":
 
     # 3. 加载 ONNX 模型
     print("正在加载 ONNX 模型...")
-    ret = rknn.load_onnx(model='./best.onnx')
+    ret = rknn.load_onnx(model='./yolov8n-pose.onnx')
     if ret != 0:
         print("ONNX 模型加载失败！")
         exit(ret)
@@ -26,7 +26,7 @@ if __name__ == "__main__":
 
     # 5. 导出为 .rknn 文件
     print("正在导出 .rknn 模型文件...")
-    ret = rknn.export_rknn('./best.rknn')
+    ret = rknn.export_rknn('./yolov8n-pose.rknn')
     if ret != 0:
         print("RKNN 模型导出失败！")
         exit(ret)
