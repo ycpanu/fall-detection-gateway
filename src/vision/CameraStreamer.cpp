@@ -58,10 +58,9 @@ namespace fall_detection
                 return false;
             }
 
-            // 强制锁定硬件参数，解决 V4L2 抓图死锁
+            // 锁定 MJPG 格式，解决部分 V4L2 驱动的抓图死锁问题；
+            // 分辨率不再强制锁定，由摄像头输出原生分辨率，模型侧通过 letterbox 保持比例
             capture_.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
-            capture_.set(cv::CAP_PROP_FRAME_WIDTH, 640);
-            capture_.set(cv::CAP_PROP_FRAME_HEIGHT, 640);
             LOG_INFO("摄像头 [{}] 已成功打开，准备启动实时采集线程...", deviceId_);
         }
 

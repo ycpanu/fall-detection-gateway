@@ -4,6 +4,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <memory>
+#include <chrono>
 
 // 引入命名空间，防止与其他库的类名冲突
 namespace fall_detection
@@ -73,6 +74,20 @@ namespace fall_detection
 				}
 
 				// 3. 尝试获取数据（非阻塞获取，有图拿走返回 True，无图返回 False，绝不死等）
+				bool wait_for_and_pop(T& value, std::chrono::milliseconds timeout)
+				{
+					std::unique_lock<std::mutex> lock(mutex_);
+
+					if (!cond_var_.wait_for(lock, timeout, [this]{ return !queue_.empty(); }))
+					{
+						return false;
+					}
+
+					value = std::move(queue_.front());
+					queue_.pop();
+					return true;
+				}
+
 				bool try_pop(T& value)
 				{
 					std::lock_guard<std::mutex> lock(mutex_);

@@ -3,6 +3,12 @@
 #include <chrono>
 #include <vector>
 #include <atomic>
+#include <memory>
+#include <string>
+#include <csignal>
+#include <unistd.h>
+#include <limits.h>
+#include <sys/stat.h>
 #include <opencv2/opencv.hpp>
 
 #include "fall-detection/utils/SysLogger.hpp"
@@ -17,14 +23,45 @@
 
 using namespace fall_detection;
 
+// 全局运行标志：供信号处理器置 0，主循环与报警线程据此安全退出
+volatile std::sig_atomic_t g_running = 1;
+
+void handleSignal(int sig)
+{
+    (void)sig;
+    g_running = 0;   // 信号处理器内只做标志位翻转，不进行任何加锁/内存分配
+}
+
+// 获取当前可执行文件所在目录（Linux 下通过 /proc/self/exe）
+std::string getExecutableDir()
+{
+    char buf[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (len <= 0)
+    {
+        return ".";
+    }
+    buf[len] = '\0';
+    std::string exePath(buf);
+    size_t pos = exePath.find_last_of('/');
+    return (pos == std::string::npos) ? "." : exePath.substr(0, pos);
+}
+
 int main(int argc, char** argv)
 {
-    // 初始化全局日志系统
-    utils::SysLogger::getInstance().init("logs/gateway.log");
+    // 初始化全局日志系统：日志写到可执行文件同级目录下的 logs/ 子目录
+    std::string exeDir = getExecutableDir();
+    std::string logDir = exeDir + "/logs";
+    mkdir(logDir.c_str(), 0755);   // 目录已存在则忽略错误
+    utils::SysLogger::getInstance().init(logDir + "/gateway.log");
     LOG_INFO("系统启动！");
 
+    // 注册退出信号，保证 Ctrl+C / kill 时能优雅退出并刷盘日志
+    std::signal(SIGINT, handleSignal);
+    std::signal(SIGTERM, handleSignal);
+
     // 初始化底层硬件与容灾模块
-    hardware::BuzzerController buzzer(73);
+    hardware::BuzzerController buzzer(138);
     buzzer.init();
 
     utils::LocalDatabase db("fall_detection.db");
@@ -52,28 +89,37 @@ int main(int argc, char** argv)
     concurrency::ThreadSafeQueue<cv::Mat> frameQueue(3);
     concurrency::ThreadSafeQueue<vision::AlertEvent> alertQueue(10);
     
-    // 线程 1：启动摄像头进行视频采集
-    vision::CameraStreamer streamer(0, frameQueue, videoCacher);
-    if (!streamer.start())
+    // 线程 1：根据启动参数选择视频源
+    // 用法：无参数 -> 摄像头设备 0；带文件路径参数 -> 回放本地视频（模拟回归测试）
+    std::unique_ptr<vision::CameraStreamer> streamer;
+    if (argc >= 2)
     {
-        LOG_ERROR("摄像头启动失败！");
-        return -1;
+        streamer = std::make_unique<vision::CameraStreamer>(std::string(argv[1]), frameQueue, videoCacher);
+    }
+    else
+    {
+        streamer = std::make_unique<vision::CameraStreamer>(0, frameQueue, videoCacher);
     }
 
-    std::atomic<bool> systemRunning{true};
+    if (!streamer->start())
+    {
+        LOG_ERROR("视频源启动失败！");
+        return -1;
+    }
 
     // 线程 2：启动报警响应线程
     std::thread alertThread([&]()
     {
         LOG_INFO("网络通信线程已启动，正在监听报警事件...");
-        while (systemRunning)
+        while (g_running)
         {
             vision::AlertEvent event;
 
-            // 阻塞等待，只有发生摔倒事件才会唤醒此线程
-            alertQueue.wait_and_pop(event);
-
-            if (!systemRunning) break;
+            // 带超时阻塞等待，超时后回到循环检查退出标志
+            if (!alertQueue.wait_for_and_pop(event, std::chrono::milliseconds(500)))
+            {
+                continue;
+            }
 
             if (event.isFall)
             {
@@ -117,11 +163,14 @@ int main(int argc, char** argv)
     // 线程 3：主线程 AI 视觉与逻辑流水线
     LOG_INFO("主线程已启动，系统开始运行...");
 
-    while (systemRunning)
+    while (g_running)
     {
         cv::Mat currentFrame;
-        frameQueue.wait_and_pop(currentFrame);
-        
+        if (!frameQueue.wait_for_and_pop(currentFrame, std::chrono::milliseconds(500)))
+        {
+            continue;
+        }
+
         if (!currentFrame.empty())
         {
             std::vector<DetectResult> aiResults;
@@ -149,11 +198,8 @@ int main(int argc, char** argv)
     }
 
     // 关闭系统
-    streamer.stop();
+    streamer->stop();
 
-    vision::AlertEvent dummyEvent;
-    dummyEvent.isFall = false;
-    alertQueue.push(dummyEvent);        // 唤醒并终止预警线程
     if (alertThread.joinable())
     {
         alertThread.join();

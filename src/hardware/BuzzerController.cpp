@@ -2,6 +2,8 @@
 #include "fall-detection/utils/SysLogger.hpp"
 #include <fstream>
 #include <chrono>
+#include <cerrno>
+#include <cstring>
 
 namespace fall_detection
 {
@@ -26,12 +28,16 @@ namespace fall_detection
         bool BuzzerController::init()
         {
             // 导出 GPIO 引脚
-            writeSysfs("/sys/class/gpio/export", std::to_string(gpioPin_));
+            if (!writeSysfs("/sys/class/gpio/export", std::to_string(gpioPin_)))
+            {
+                LOG_ERROR("无法导出 GPIO 引脚 {}（可能被占用或编号不存在）: {}", gpioPin_, std::strerror(errno));
+                return false;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 等待系统生成节点
             // 设置为输出模式
-            if (!writeSysfs("/sys/class/gpio/gpio" + std::to_string(gpioPin_) + "/direction", "out")) 
+            if (!writeSysfs("/sys/class/gpio/gpio" + std::to_string(gpioPin_) + "/direction", "out"))
             {
-                LOG_ERROR("无法初始化蜂鸣器 GPIO 引脚: {}", gpioPin_);
+                LOG_ERROR("无法设置 GPIO 引脚 {} 为输出模式: {}", gpioPin_, std::strerror(errno));
                 return false;
             }
             LOG_INFO("蜂鸣器容灾模块初始化成功，引脚: {}", gpioPin_);

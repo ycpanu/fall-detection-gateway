@@ -51,7 +51,7 @@ namespace fall_detection
                 // 阈值配置，可根据摄像头安装高度进行调优
                 const int CONFIRM_FRAMES_THRESHOLD = 5;         // 需连续 5 帧 (约 0.3 秒) 判定为 lie 才报警
                 const float FALL_VELOCITY_THRESHOLD = 500.0f;   // Y 轴下坠速度阈值 (像素/秒)
-                const int CLASS_LIE = 3;                        // 假设 3 代表 lie (模型调整)
+                const int CLASS_LIE = 1;                        // 代表 lie (模型调整)
         };
     };
 }

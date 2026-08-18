@@ -1,5 +1,7 @@
 #include <fstream>
 #include <cstring>
+#include <cmath>
+#include <algorithm>
 
 #include "fall-detection/vision/RKNNInferencer.hpp"
 #include "fall-detection/utils/SysLogger.hpp"
@@ -101,6 +103,9 @@ namespace fall_detection
             memset(&outputAttrs_[i], 0, sizeof(rknn_tensor_attr));
             outputAttrs_[i].index = i;
             rknn_query(ctx_, RKNN_QUERY_OUTPUT_ATTR, &(outputAttrs_[i]), sizeof(rknn_tensor_attr));
+            LOG_INFO("输出张量 {}: n_dims={}, dims=[{}, {}, {}, {}], n_elems={}", i,
+                     outputAttrs_[i].n_dims, outputAttrs_[i].dims[0], outputAttrs_[i].dims[1],
+                     outputAttrs_[i].dims[2], outputAttrs_[i].dims[3], outputAttrs_[i].n_elems);
         }
         LOG_INFO("成功加载 RKNN 模型！模型期望输入尺寸：宽={} 高={} 通道={}",inputAttrs_[0].dims[1], inputAttrs_[0].dims[2], inputAttrs_[0].dims[3]);
 
@@ -115,25 +120,42 @@ namespace fall_detection
             LOG_ERROR("调用 detect 前必须先成功执行 init()！");
             return false;
         }
+        if (frame.empty())
+        {
+            LOG_WARN("detect 收到空帧，跳过本次推理");
+            return false;
+        }
 
         // 1. 图像预处理，获取模型需要的宽高
         int reqWidth = inputAttrs_[0].dims[1];
         int reqHeight = inputAttrs_[0].dims[2];
 
-        cv::Mat rgbFrame, resizedFrame;
+        cv::Mat rgbFrame;
         // OpenCV 默认 BGR，需要转换成 RGB
         cv::cvtColor(frame, rgbFrame, cv::COLOR_BGR2RGB);
-        // 将原始图像强制缩放到模型所需要的尺寸
-        cv::resize(rgbFrame, resizedFrame, cv::Size(reqWidth, reqHeight));
+
+        // Letterbox 缩放：保持宽高比，不足部分用灰边(114)填充，避免画面拉伸变形
+        float scale = std::min(static_cast<float>(reqWidth) / rgbFrame.cols,
+                               static_cast<float>(reqHeight) / rgbFrame.rows);
+        int newW = static_cast<int>(std::round(rgbFrame.cols * scale));
+        int newH = static_cast<int>(std::round(rgbFrame.rows * scale));
+        int padW = (reqWidth - newW) / 2;
+        int padH = (reqHeight - newH) / 2;
+
+        cv::Mat resized;
+        cv::resize(rgbFrame, resized, cv::Size(newW, newH));
+        cv::Mat letterboxed(reqHeight, reqWidth, CV_8UC3, cv::Scalar(114, 114, 114));
+        resized.copyTo(letterboxed(cv::Rect(padW, padH, newW, newH)));
 
         // 2. NPU 硬件推理
         rknn_input inputs[1];
         memset(inputs, 0, sizeof(inputs));
         inputs[0].index = 0;
         inputs[0].type = RKNN_TENSOR_UINT8;     // 图片像素格式一般为 unit8
-        inputs[0].size = resizedFrame.cols * resizedFrame.rows * resizedFrame.channels();
+        inputs[0].size = letterboxed.cols * letterboxed.rows * letterboxed.channels();
         inputs[0].fmt = RKNN_TENSOR_NHWC;       // 数据排布格式 (N:批次, H:高, W:宽, C:通道)
-        inputs[0].buf = resizedFrame.data;      // 将OpenCV 的图像数据指针直接给 NPU
+        inputs[0].buf = letterboxed.data;       // 将OpenCV 的图像数据指针直接给 NPU
+        inputs[0].pass_through = 0;
 
         // 将数据推入 NPU 显存
         int ret = rknn_inputs_set(ctx_, numInput_, inputs);
@@ -172,8 +194,117 @@ namespace fall_detection
         // 规则引擎 (FallRuleEngine) 中分离处理。
 
         // 解析完毕后，必须释放输出内存，防止内存泄露
+
+        float* outData = static_cast<float*>(outputs[0].buf);
+        std::vector<DetectResult> candidates;
+
+        // 每个锚框的属性数 = 4 个坐标 + NUM_CLASSES 个类别分数
+        const int BBOX_ATR = 4 + NUM_CLASSES;
+        // 从输出张量属性动态读取锚框数量，替代硬编码 8400
+        const int NUM_ANCHORS = static_cast<int>(outputAttrs_[0].n_elems) / BBOX_ATR;
+
+        for (int i = 0; i < NUM_ANCHORS; i++)
+        {
+            // 找出当前锚框中 4 个分类里的最大置信度
+            float maxClassConf = 0.0f;
+            int maxClassId = -1;
+
+            for (int c = 0; c < NUM_CLASSES; c++)
+            {
+                // 内存排布是按属性切片的，跨度为 NUM_ANCHORS
+                float conf = outData[(4 + c) * NUM_ANCHORS + i];
+                if (conf > maxClassConf)
+                {
+                    maxClassConf = conf;
+                    maxClassId = c;
+                }
+            }
+
+            // 置信度过滤
+            if (maxClassConf > CONF_THRESHOLD)
+            {
+                // 解析边框的中心点坐标 cx, cy, 宽， 高
+                float cx = outData[0 * NUM_ANCHORS + i];
+                float cy = outData[1 * NUM_ANCHORS + i];
+                float w = outData[2 * NUM_ANCHORS + i];
+                float h = outData[3 * NUM_ANCHORS + i];
+
+                // 锚框解码：模型输出坐标是相对 reqWidth x reqHeight 的像素，
+                // 映射回原图需先减去 letterbox 灰边偏移，再除以缩放比例
+                DetectResult box;
+                box.classId = maxClassId;
+                box.confidence = maxClassConf;
+                box.x = static_cast<int>((cx - w / 2.0f - padW) / scale);
+                box.y = static_cast<int>((cy - h / 2.0f - padH) / scale);
+                box.width = static_cast<int>(w / scale);
+                box.height = static_cast<int>(h / scale);
+
+                candidates.push_back(box);
+            }
+        }
+
+        // 非极大值抑制(NMS) - 消除重影
+        nms(candidates, results);
+
+        // 释放 NPU 输出内存
         rknn_outputs_release(ctx_, numOutput_, outputs);
 
         return true;
+    }
+
+    void RKNNInferencer::nms(std::vector<DetectResult>& inputBoxes, std::vector<DetectResult>& outputBoxes)
+    {
+        outputBoxes.clear();
+
+        // 按照置信度从高到低排序，优先保留最确定的预测框
+        std::sort(inputBoxes.begin(), inputBoxes.end(), [](const DetectResult& a, const DetectResult& b)
+        {
+            return a.confidence > b.confidence;
+        });
+
+        std::vector<bool> isSuppressed(inputBoxes.size(), false);
+
+        for (size_t i = 0; i < inputBoxes.size(); i++)
+        {
+            if (isSuppressed[i]) continue;
+
+            outputBoxes.push_back(inputBoxes[i]);   // 保留最高分的框
+
+            // 检查后面所有的框，如果和当前框的 IoU 超过阈值，直接抹杀
+            for (size_t j = i + 1; j < inputBoxes.size(); j++)
+            {
+                if (!isSuppressed[j] && inputBoxes[i].classId == inputBoxes[j].classId)
+                {
+                    float iou = calculateIoU(inputBoxes[i], inputBoxes[j]);
+                    if (iou > NMS_THRESHOLD)
+                    {
+                        isSuppressed[j] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    float RKNNInferencer::calculateIoU(const DetectResult& box1, const DetectResult& box2)
+    {
+        // 计算交集的坐标
+        int x1 = std::max(box1.x, box2.x);
+        int y1 = std::max(box1.y, box2.y);
+        int x2 = std::min(box1.x + box1.width, box2.x + box2.width);
+        int y2 = std::min(box1.y + box1.height, box2.y + box2.height);
+
+        // 如果没有交集
+        if (x1 >= x2 || y1 >= y2) return 0.0f;
+
+        float intersectionArea = static_cast<float>((x2 - x1) * (y2 - y1));
+        float box1Area = static_cast<float>(box1.width * box1.height);
+        float box2Area = static_cast<float>(box2.width * box2.height);
+
+        // 并集面积为 0（两个框都没有有效面积）时直接返回 0，避免除零
+        float unionArea = box1Area + box2Area - intersectionArea;
+        if (unionArea <= 0.0f) return 0.0f;
+
+        // 经典的 IoU 公式：交集面积 / 并集面积
+        return intersectionArea / unionArea;
     }
 }

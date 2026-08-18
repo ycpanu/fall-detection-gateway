@@ -59,10 +59,21 @@ namespace fall_detection
             int numInput_;
             int numOutput_;
 
+            // YOLOv8 训练模型后处理阈值
+            const float CONF_THRESHOLD = 0.50f; // 置信度过滤阈值
+            const float NMS_THRESHOLD = 0.45f;  // NMS 交并比剔除阈值
+            const int NUM_CLASSES = 4;          // 姿态类别数 (stand, sit, bend, lie)
+
         private:
             /**
              *  @brief 内部辅助函数：读取 .rknn 模型文件到内存
              */
             unsigned char* loadModelFile(const char* filename, int* modelSize);
+
+            // 执行NMS算法，剔除重叠的废框
+            void nms(std::vector<DetectResult>& inputBoxes, std::vector<DetectResult>& outputBoxes);
+
+            // 计算两个矩形框的 IoU(交并比)
+            float calculateIoU(const DetectResult& box1, const DetectResult& box2);
     };
 }
