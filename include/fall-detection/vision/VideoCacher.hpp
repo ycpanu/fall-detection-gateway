@@ -5,6 +5,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace fall_detection
 {
@@ -25,7 +26,7 @@ namespace fall_detection
                  * 
                  */
                 VideoCacher(int maxFrames = 90);
-                ~VideoCacher() = default;
+                ~VideoCacher();
 
                 /**
                  * @brief 将最新的一帧画面压入环形缓存
@@ -44,6 +45,7 @@ namespace fall_detection
                 int maxFrame_;
                 std::deque<cv::Mat> buffer_;
                 std::mutex mtx_;
+                std::vector<std::thread> writerThreads_;   // 后台编码线程句柄，析构时统一 join 保证视频写完
         };
     }
 }

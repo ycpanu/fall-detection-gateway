@@ -7,6 +7,18 @@ namespace fall_detection
     {
         VideoCacher::VideoCacher(int maxFrames) : maxFrame_(maxFrames) {}
 
+        VideoCacher::~VideoCacher()
+        {
+            // 等待所有后台编码线程写完，避免程序退出时视频文件缺 moov 头而无法播放
+            for (auto& t : writerThreads_)
+            {
+                if (t.joinable())
+                {
+                    t.join();
+                }
+            }
+        }
+
         void VideoCacher::pushFrame(const cv::Mat& frame)
         {
             // 加锁保护临界区，防止异步保存时发生数据竞争
@@ -38,15 +50,27 @@ namespace fall_detection
 
             LOG_INFO("已成功截取摔倒前 {} 帧画面，正在后台异步合成视频...", snapshot.size());
 
-            // 启动一个独立的后台线程进行极其耗时的视频编码操作
-            std::thread([snapshot, outputPath, fps]()
+            // 启动独立后台线程进行耗时视频编码，句柄存入成员供析构时 join
+            writerThreads_.emplace_back([snapshot, outputPath, fps]()
             {
-                // 获取第一帧的尺寸，用于初始化 VideoWriter
+                // H.264/MPEG-4 编码器要求宽高为偶数，奇数会写出损坏文件（播放器无法解码）
                 int width = snapshot.front().cols;
                 int height = snapshot.front().rows;
+                width -= width % 2;
+                height -= height % 2;
+                cv::Size size(width, height);
 
-                // 使用 mp4v 编码器生成 .mp4 文件
-                cv::VideoWriter writer(outputPath, cv::VideoWriter::fourcc('m', 'p', '4', 'v'), fps, cv::Size(width, height));
+                cv::VideoWriter writer;
+
+                // 优先 H.264(avc1)：几乎所有现代播放器都原生支持；
+                // 精简交叉编译的 OpenCV 若未编译 libx264 会打开失败，则回退 MPEG-4(mp4v)
+                writer.open(outputPath, cv::VideoWriter::fourcc('a', 'v', 'c', '1'), fps, size);
+                if (!writer.isOpened())
+                {
+                    LOG_WARN("H.264(avc1) 编码器不可用，回退到 MPEG-4(mp4v)...");
+                    writer.release();
+                    writer.open(outputPath, cv::VideoWriter::fourcc('m', 'p', '4', 'v'), fps, size);
+                }
 
                 if (!writer.isOpened())
                 {
@@ -54,15 +78,24 @@ namespace fall_detection
                     return ;
                 }
 
-                // 将快照中的所有历史帧依次写入视频文件
+                // 将快照中的所有历史帧依次写入视频文件（尺寸不一致时补齐）
                 for (const auto& frame : snapshot)
                 {
-                    writer.write(frame);
+                    if (frame.cols == width && frame.rows == height)
+                    {
+                        writer.write(frame);
+                    }
+                    else
+                    {
+                        cv::Mat resized;
+                        cv::resize(frame, resized, size);
+                        writer.write(resized);
+                    }
                 }
 
                 writer.release();
                 LOG_WARN("现场视频已成功落盘：{}", outputPath);
-            }).detach();            //使用 detach 分离线程，让它在后台工作，主线程无需等待
+            });
         }
     }
 }
