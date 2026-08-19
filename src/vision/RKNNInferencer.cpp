@@ -248,6 +248,17 @@ namespace fall_detection
             // 非极大值抑制(NMS) - 消除重影
             nms(candidates, results);
 
+            // 诊断日志：定位“检测不到摔倒”时问题在后处理还是判断引擎
+            if (results.empty())
+            {
+                LOG_TRACE("本帧未解析出有效人体（候选框 {} 个，CONF_THRESHOLD={}）", candidates.size(), CONF_THRESHOLD);
+            }
+            else
+            {
+                LOG_TRACE("本帧解析出 {} 个人体，第一个含 {} 个关键点",
+                          results.size(), results[0].keypoints.size());
+            }
+
             // 释放 NPU 输出内存
             rknn_outputs_release(ctx_, numOutput_, outputs);
 

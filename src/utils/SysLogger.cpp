@@ -41,8 +41,8 @@ namespace fall_detection
                     // 格式说明：[时间] [线程ID] [日志级别] [源文件:行号] 具体的日志信息
                     logger_->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%t] [%^%l%$] [%s:%#] %v");
 
-                    // 7. 设置最低生效的日志级别为 DEBUG
-                    logger_->set_level(spdlog::level::debug);
+                    // 7. 设置最低生效的日志级别为 TRACE（调试摔倒判定时需看到 LOG_TRACE 输出）
+                    logger_->set_level(spdlog::level::trace);
 
                     // 8. 容灾设置：当遇到 ERROR 级别的日志时，立刻强制将内存中的日志刷入磁盘
                     // 防止程序遇到段错误（Segfault）死机重启时，还没来得及写盘，导致死机现场丢失
