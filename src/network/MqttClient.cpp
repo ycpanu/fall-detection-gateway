@@ -9,9 +9,10 @@ namespace fall_detection
 {
     namespace network
     {
-        MqttClient::MqttClient(const std::string& serverAddress, const std::string& clientId)
+        MqttClient::MqttClient(const std::string& serverAddress, const std::string& clientId, int keepAliveSeconds)
             : serverAddress_(serverAddress)
             , clientId_(clientId)
+            , keepAliveSeconds_(keepAliveSeconds)
         {
             // 实例化 Paho MQTT 异步客户端
             client_ = std::make_unique<mqtt::async_client>(serverAddress_, clientId_);
@@ -37,7 +38,7 @@ namespace fall_detection
                 // 配置连接选项
                 mqtt::connect_options connOpts;
                 connOpts.set_clean_session(true);
-                connOpts.set_keep_alive_interval(20);   // 20 秒心跳包，适应弱网环境
+                connOpts.set_keep_alive_interval(keepAliveSeconds_);   // 心跳保活间隔，适应弱网环境
 
                 // 断网自动重连
                 connOpts.set_automatic_reconnect(1, 10);

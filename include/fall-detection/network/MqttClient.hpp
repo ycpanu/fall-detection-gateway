@@ -20,8 +20,9 @@ namespace fall_detection
                  * @brief 构造函数
                  * @param serverAddress MQTT 服务器/Broker 的地址 (例如 "tcp://broker.emqx.io:1883")
                  * @param clientId 边缘网关的唯一设备标识符
+                 * @param keepAliveSeconds 心跳保活间隔（秒），弱网环境不宜过大
                  */
-                MqttClient(const std::string& serverAddress, const std::string& clientId);
+                MqttClient(const std::string& serverAddress, const std::string& clientId, int keepAliveSeconds = 20);
 
                 ~MqttClient();
 
@@ -54,6 +55,7 @@ namespace fall_detection
             private:
                 std::string serverAddress_;
                 std::string clientId_;
+                int keepAliveSeconds_;
 
                 // 使用 Paho MQTT 的现代 C++ 异步客户端，确保底层网络 I/O 
                 std::unique_ptr<mqtt::async_client> client_;

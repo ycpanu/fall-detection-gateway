@@ -2,6 +2,8 @@
 
 #include <vector>
 #include <iostream>
+#include <algorithm>
+#include <cctype>
 
 namespace fall_detection
 {
@@ -58,7 +60,30 @@ namespace fall_detection
                 // 如果日志系统本身初始化失败，用 cout 打印
                 std::cout << "SysLogger initialization failed: " << ex.what() << std::endl;
             }
-            
+
+        }
+
+        void SysLogger::setLevel(const std::string& level)
+        {
+            if (!logger_)
+            {
+                return;
+            }
+
+            // 统一转大写，避免配置里大小写不一致导致失效
+            std::string upper = level;
+            std::transform(upper.begin(), upper.end(), upper.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+
+            spdlog::level::level_enum lvl = spdlog::level::info;
+            if (upper == "TRACE")                lvl = spdlog::level::trace;
+            else if (upper == "DEBUG")           lvl = spdlog::level::debug;
+            else if (upper == "INFO")            lvl = spdlog::level::info;
+            else if (upper == "WARN" || upper == "WARNING") lvl = spdlog::level::warn;
+            else if (upper == "ERROR")           lvl = spdlog::level::err;
+            else if (upper == "CRITICAL")        lvl = spdlog::level::critical;
+
+            logger_->set_level(lvl);
         }
     }
 }

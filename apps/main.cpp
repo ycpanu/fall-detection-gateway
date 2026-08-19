@@ -12,6 +12,7 @@
 #include <opencv2/opencv.hpp>
 
 #include "fall-detection/utils/SysLogger.hpp"
+#include "fall-detection/utils/ConfigManager.hpp"
 #include "fall-detection/concurrency/ThreadSafeQueue.hpp"
 #include "fall-detection/vision/CameraStreamer.hpp"
 #include "fall-detection/vision/VideoCacher.hpp"
@@ -47,13 +48,53 @@ std::string getExecutableDir()
     return (pos == std::string::npos) ? "." : exePath.substr(0, pos);
 }
 
+// 相对路径统一基于可执行文件目录解析，绝对路径原样返回
+std::string resolvePath(const std::string& baseDir, const std::string& path)
+{
+    if (path.empty() || path[0] == '/')
+    {
+        return path;
+    }
+    return baseDir + "/" + path;
+}
+
+// 确保某个文件的父目录存在（尽力而为，已存在则忽略）
+void ensureParentDir(const std::string& filePath)
+{
+    size_t pos = filePath.find_last_of('/');
+    if (pos == std::string::npos)
+    {
+        return;
+    }
+    std::string dir = filePath.substr(0, pos);
+    if (!dir.empty())
+    {
+        mkdir(dir.c_str(), 0755);
+    }
+}
+
 int main(int argc, char** argv)
 {
-    // 初始化全局日志系统：日志写到可执行文件同级目录下的 logs/ 子目录
     std::string exeDir = getExecutableDir();
-    std::string logDir = exeDir + "/logs";
-    mkdir(logDir.c_str(), 0755);   // 目录已存在则忽略错误
-    utils::SysLogger::getInstance().init(logDir + "/gateway.log");
+
+    // 1. 加载全局配置（此时日志系统尚未初始化，ConfigManager 内部错误只打印到 stderr）
+    utils::ConfigManager& config = utils::ConfigManager::getInstance();
+    bool configOk = config.load("configs/config.json");
+
+    // 2. 初始化日志系统：路径与级别均来自配置
+    std::string logPath = resolvePath(exeDir, config.getLogFilePath());
+    ensureParentDir(logPath);
+    utils::SysLogger::getInstance().init(logPath);
+    utils::SysLogger::getInstance().setLevel(config.getLogLevel());
+
+    if (configOk)
+    {
+        LOG_INFO("配置文件加载成功！");
+    }
+    else
+    {
+        LOG_ERROR("配置文件加载失败，将使用内置默认参数继续运行！");
+    }
     LOG_INFO("系统启动！");
 
     // 注册退出信号，保证 Ctrl+C / kill 时能优雅退出并刷盘日志
@@ -61,36 +102,49 @@ int main(int argc, char** argv)
     std::signal(SIGTERM, handleSignal);
 
     // 初始化底层硬件与容灾模块
-    hardware::BuzzerController buzzer(138);
+    hardware::BuzzerController buzzer(config.getBuzzerGpioPin());
     buzzer.init();
 
-    utils::LocalDatabase db("fall_detection.db");
+    utils::LocalDatabase db(config.getSqliteDbPath());
     db.init();
-    
+
     // 初始化网络通信层
-    network::MqttClient mqttClient("tcp://broker.emqx.io:1883", "Orangepi_Gateway_001");
+    network::MqttClient mqttClient(config.getMqttBroker(), config.getMqttClientId(), config.getKeepAliveSeconds());
     mqttClient.connect();
 
     // 初始化 NPU 硬件推理
-    vision::RKNNInferencer inferencer("./best.rknn");
+    vision::RKNNInferencer inferencer(config.getRknnModelPath(),
+                                      config.getConfidenceThreshold(),
+                                      config.getNmsThreshold());
     if (!inferencer.init())
     {
         LOG_ERROR("NPU 模型加载失败！");
         return -1;
     }
-    
+
     // 初始化摔倒逻辑规则引擎
-    vision::FallRuleEngine ruleEngine;
+    vision::FallRuleConfig ruleConfig;
+    ruleConfig.kptConfThreshold = config.getKptConfThreshold();
+    ruleConfig.fallAngleThreshold = config.getFallAngleThreshold();
+    ruleConfig.fallVelocityThreshold = config.getFallVelocityThreshold();
+    ruleConfig.confirmFramesThreshold = config.getConfirmFramesThreshold();
+    ruleConfig.staticLieThreshold = config.getStaticLieThreshold();
+    ruleConfig.fallEventWindow = config.getFallEventWindow();
+    vision::FallRuleEngine ruleEngine(ruleConfig);
 
     // 视频缓存
-    vision::VideoCacher videoCacher(90);
+    vision::VideoCacher videoCacher(config.getVideoCacheFrames());
 
     // 实例化底层通信队列
-    concurrency::ThreadSafeQueue<cv::Mat> frameQueue(3);
-    concurrency::ThreadSafeQueue<vision::AlertEvent> alertQueue(10);
-    
+    concurrency::ThreadSafeQueue<cv::Mat> frameQueue(config.getFrameQueueSize());
+    concurrency::ThreadSafeQueue<vision::AlertEvent> alertQueue(config.getAlertQueueSize());
+
+    // 视频落盘目录
+    std::string videoDir = resolvePath(exeDir, config.getVideoOutputDir());
+    mkdir(videoDir.c_str(), 0755);
+
     // 线程 1：根据启动参数选择视频源
-    // 用法：无参数 -> 摄像头设备 0；带文件路径参数 -> 回放本地视频（模拟回归测试）
+    // 用法：无参数 -> 摄像头设备；带文件路径参数 -> 回放本地视频（模拟回归测试）
     std::unique_ptr<vision::CameraStreamer> streamer;
     if (argc >= 2)
     {
@@ -98,7 +152,7 @@ int main(int argc, char** argv)
     }
     else
     {
-        streamer = std::make_unique<vision::CameraStreamer>(0, frameQueue, videoCacher);
+        streamer = std::make_unique<vision::CameraStreamer>(config.getCameraDeviceId(), frameQueue, videoCacher);
     }
 
     if (!streamer->start())
@@ -108,6 +162,8 @@ int main(int argc, char** argv)
     }
 
     // 线程 2：启动报警响应线程
+    std::string alertTopic = config.getAlertTopic();
+    int alarmDurationMs = config.getAlarmDurationMs();
     std::thread alertThread([&]()
     {
         LOG_INFO("网络通信线程已启动，正在监听报警事件...");
@@ -126,7 +182,7 @@ int main(int argc, char** argv)
                 LOG_WARN("处理报警事件！触发时间戳：{}", event.timestamp);
 
                 // 触发本地蜂鸣器
-                buzzer.triggerAlarm(3000);
+                buzzer.triggerAlarm(alarmDurationMs);
 
                 // Store-and-Forward 机制
                 if (mqttClient.isConnected())
@@ -135,14 +191,14 @@ int main(int argc, char** argv)
                     auto pendingAlerts = db.getPendingAlerts();
                     for (const auto& pending : pendingAlerts)
                     {
-                        if (mqttClient.publishAlert("fall_detection/alerts", pending))
+                        if (mqttClient.publishAlert(alertTopic, pending))
                         {
                             db.markAsUploaded(pending.dbId);
                         }
                     }
 
                     // 发布当前的最新报警
-                    if (mqttClient.publishAlert("fall_detection/alerts", event))
+                    if (mqttClient.publishAlert(alertTopic, event))
                     {
                         LOG_INFO("报警已成功上传至云端！附带现场视频路径：{}", event.videoPath);
                     }
@@ -179,15 +235,15 @@ int main(int argc, char** argv)
             if (inferencer.detect(currentFrame, aiResults))
             {
                 vision::AlertEvent event;
-                
+
                 // 摔倒判断（高宽比 + 时序下坠速度）
                 if (ruleEngine.processFrame(aiResults, event))
                 {
                     LOG_WARN("摔倒事件发生！启动视频截取...");
 
-                    // 异步保存前 3 秒视频
-                    std::string videoName = "fall_record_" + std::to_string(event.timestamp) + ".mp4";
-                    videoCacher.saveVideoAsync(videoName);
+                    // 异步保存前 N 秒视频
+                    std::string videoName = videoDir + "/fall_record_" + std::to_string(event.timestamp) + ".mp4";
+                    videoCacher.saveVideoAsync(videoName, config.getVideoSaveFps());
                     event.videoPath = videoName;
 
                     // 将事件放入队列交由后台线程处理

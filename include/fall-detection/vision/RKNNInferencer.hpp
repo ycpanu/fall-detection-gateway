@@ -43,8 +43,10 @@ namespace fall_detection
             public:
                 /**
                  * @param modelPath 转换好的 .rknn 模型文件在开发板的绝对路径
+                 * @param confThreshold 置信度过滤阈值
+                 * @param nmsThreshold NMS 交并比剔除阈值
                  */
-                RKNNInferencer(const std::string& modelPath);
+                RKNNInferencer(const std::string& modelPath, float confThreshold = 0.5f, float nmsThreshold = 0.45f);
                 
                 ~RKNNInferencer();
 
@@ -69,11 +71,9 @@ namespace fall_detection
                 int numInput_;
                 int numOutput_;
 
-                // YOLOv8 训练模型后处理阈值
-                // const int NUM_CLASSES = 4;          // 姿态类别数 (stand, sit, bend, lie)
-                const float CONF_THRESHOLD = 0.50f; // 置信度过滤阈值
-                const float NMS_THRESHOLD = 0.45f;  // NMS 交并比剔除阈值
-                
+                // YOLOv8 后处理阈值（由 ConfigManager 从 config.json 注入）
+                float confThreshold_;   // 置信度过滤阈值
+                float nmsThreshold_;    // NMS 交并比剔除阈值
 
                 // YOLOv8n-Pose 模型解析阈值与属性配置
                 const int NUM_CLASSES = 1;              // Pose 模型类别

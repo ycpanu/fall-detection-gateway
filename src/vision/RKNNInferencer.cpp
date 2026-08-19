@@ -10,7 +10,10 @@ namespace fall_detection
 {
     namespace vision
     {
-        RKNNInferencer::RKNNInferencer(const std::string& modelPath) : modelPath_(modelPath), ctx_(0), isInitialized_(false), inputAttrs_(nullptr), outputAttrs_(nullptr), numInput_(0), numOutput_(0) {}
+        RKNNInferencer::RKNNInferencer(const std::string& modelPath, float confThreshold, float nmsThreshold)
+            : modelPath_(modelPath), confThreshold_(confThreshold), nmsThreshold_(nmsThreshold),
+              ctx_(0), isInitialized_(false), inputAttrs_(nullptr), outputAttrs_(nullptr),
+              numInput_(0), numOutput_(0) {}
 
         RKNNInferencer::~RKNNInferencer()
         {
@@ -210,7 +213,7 @@ namespace fall_detection
             {
                 // Pose 模型只有 person 一类，类别置信度即第 4 个属性
                 float clsConf = outData[4 * NUM_ANCHORS + i];
-                if (clsConf <= CONF_THRESHOLD)
+                if (clsConf <= confThreshold_)
                 {
                     continue;
                 }
@@ -251,7 +254,7 @@ namespace fall_detection
             // 诊断日志：定位“检测不到摔倒”时问题在后处理还是判断引擎
             if (results.empty())
             {
-                LOG_TRACE("本帧未解析出有效人体（候选框 {} 个，CONF_THRESHOLD={}）", candidates.size(), CONF_THRESHOLD);
+                LOG_TRACE("本帧未解析出有效人体（候选框 {} 个，confThreshold={}）", candidates.size(), confThreshold_);
             }
             else
             {
@@ -289,7 +292,7 @@ namespace fall_detection
                     if (!isSuppressed[j] && inputBoxes[i].classId == inputBoxes[j].classId)
                     {
                         float iou = calculateIoU(inputBoxes[i], inputBoxes[j]);
-                        if (iou > NMS_THRESHOLD)
+                        if (iou > nmsThreshold_)
                         {
                             isSuppressed[j] = true;
                         }

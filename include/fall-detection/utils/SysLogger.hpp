@@ -46,6 +46,9 @@ namespace fall_detection
                 // 初始化日志系统（在 main 函数最开头调用）
                 void init(const std::string& log_file_path = "logs/gateway.log");
 
+                // 设置日志最低生效级别（TRACE/DEBUG/INFO/WARN/ERROR/CRITICAL，不区分大小写）
+                void setLevel(const std::string& level);
+
                 // 获取日志器对象，供下面的宏调用
                 std::shared_ptr<spdlog::async_logger> getLogger()
                 {

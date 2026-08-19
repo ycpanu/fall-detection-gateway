@@ -8,8 +8,8 @@ namespace fall_detection
 {
     namespace vision
     {
-        FallRuleEngine::FallRuleEngine()
-            : lieConfirmCount_(0), hasPreviousTarget_(false), previousHipY_(0.0f),
+        FallRuleEngine::FallRuleEngine(const FallRuleConfig& config)
+            : config_(config), lieConfirmCount_(0), hasPreviousTarget_(false), previousHipY_(0.0f),
               fallEventPending_(false), fallEventFrames_(0)
         {
             lastTime_ = std::chrono::steady_clock::now();
@@ -57,10 +57,10 @@ namespace fall_detection
             const auto& kp = target->keypoints;
 
             // 4. 肩、髋可见性检查
-            bool hasShoulder = kp[L_SHOULDER].confidence > KPT_CONF_THRESHOLD ||
-                               kp[R_SHOULDER].confidence > KPT_CONF_THRESHOLD;
-            bool hasHip = kp[L_HIP].confidence > KPT_CONF_THRESHOLD ||
-                          kp[R_HIP].confidence > KPT_CONF_THRESHOLD;
+            bool hasShoulder = kp[L_SHOULDER].confidence > config_.kptConfThreshold ||
+                               kp[R_SHOULDER].confidence > config_.kptConfThreshold;
+            bool hasHip = kp[L_HIP].confidence > config_.kptConfThreshold ||
+                          kp[R_HIP].confidence > config_.kptConfThreshold;
             if (!hasShoulder || !hasHip)
             {
                 resetState();
@@ -70,15 +70,15 @@ namespace fall_detection
             // 5. 计算肩中点与髋中点（两侧都可见则取平均，否则取可见侧）
             float shoulderX = 0.0f, shoulderY = 0.0f;
             int shoulderCnt = 0;
-            if (kp[L_SHOULDER].confidence > KPT_CONF_THRESHOLD) { shoulderX += kp[L_SHOULDER].x; shoulderY += kp[L_SHOULDER].y; ++shoulderCnt; }
-            if (kp[R_SHOULDER].confidence > KPT_CONF_THRESHOLD) { shoulderX += kp[R_SHOULDER].x; shoulderY += kp[R_SHOULDER].y; ++shoulderCnt; }
+            if (kp[L_SHOULDER].confidence > config_.kptConfThreshold) { shoulderX += kp[L_SHOULDER].x; shoulderY += kp[L_SHOULDER].y; ++shoulderCnt; }
+            if (kp[R_SHOULDER].confidence > config_.kptConfThreshold) { shoulderX += kp[R_SHOULDER].x; shoulderY += kp[R_SHOULDER].y; ++shoulderCnt; }
             shoulderX /= shoulderCnt;
             shoulderY /= shoulderCnt;
 
             float hipX = 0.0f, hipY = 0.0f;
             int hipCnt = 0;
-            if (kp[L_HIP].confidence > KPT_CONF_THRESHOLD) { hipX += kp[L_HIP].x; hipY += kp[L_HIP].y; ++hipCnt; }
-            if (kp[R_HIP].confidence > KPT_CONF_THRESHOLD) { hipX += kp[R_HIP].x; hipY += kp[R_HIP].y; ++hipCnt; }
+            if (kp[L_HIP].confidence > config_.kptConfThreshold) { hipX += kp[L_HIP].x; hipY += kp[L_HIP].y; ++hipCnt; }
+            if (kp[R_HIP].confidence > config_.kptConfThreshold) { hipX += kp[R_HIP].x; hipY += kp[R_HIP].y; ++hipCnt; }
             hipX /= hipCnt;
             hipY /= hipCnt;
 
@@ -105,7 +105,7 @@ namespace fall_detection
             lastTime_ = currentTime;
 
             // 8. 快速下坠事件检测（进入时序窗口）
-            if (velocityY > FALL_VELOCITY_THRESHOLD)
+            if (velocityY > config_.fallVelocityThreshold)
             {
                 fallEventPending_ = true;
                 fallEventFrames_ = 0;
@@ -116,14 +116,14 @@ namespace fall_detection
             if (fallEventPending_)
             {
                 fallEventFrames_++;
-                if (fallEventFrames_ > FALL_EVENT_WINDOW)
+                if (fallEventFrames_ > config_.fallEventWindow)
                 {
                     fallEventPending_ = false;
                 }
             }
 
             // 10. 躺倒判定（身体轴线角度）
-            if (angle > FALL_ANGLE_THRESHOLD)
+            if (angle > config_.fallAngleThreshold)
             {
                 lieConfirmCount_++;
                 LOG_TRACE("疑似摔倒！身体倾角 {:.1f}°，连续帧数 {}", angle, lieConfirmCount_);
@@ -139,9 +139,9 @@ namespace fall_detection
 
             // 11. 报警判定
             // 路径 A：快速下坠 + 连续躺倒确认（动态摔倒）
-            bool dynamicFall = fallEventPending_ && lieConfirmCount_ >= CONFIRM_FRAMES_THRESHOLD;
+            bool dynamicFall = fallEventPending_ && lieConfirmCount_ >= config_.confirmFramesThreshold;
             // 路径 B：持续躺倒（静态兜底，可能没抓到下坠瞬间）
-            bool staticLie = lieConfirmCount_ >= STATIC_LIE_THRESHOLD;
+            bool staticLie = lieConfirmCount_ >= config_.staticLieThreshold;
 
             if (dynamicFall || staticLie)
             {

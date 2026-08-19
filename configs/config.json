@@ -1,0 +1,46 @@
+{
+    "system": {
+        "log_file_path": "logs/gateway.log",
+        "log_level": "INFO"
+    },
+
+    "vision": {
+        "camera_device_id": 0,
+        "frame_queue_size": 3,
+        "video_cache_frames": 90,
+        "video_save_fps": 30,
+        "video_output_dir": "videos"
+    },
+
+    "model": {
+        "rknn_model_path": "./yolov8n-pose.rknn",
+        "confidence_threshold": 0.5,
+        "nms_threshold": 0.45
+    },
+
+    "rule_engine": {
+        "kpt_conf_threshold": 0.3,
+        "fall_angle_threshold": 60.0,
+        "fall_velocity_threshold": 400.0,
+        "confirm_frames_threshold": 5,
+        "static_lie_threshold": 30,
+        "fall_event_window": 15
+    },
+
+    "network": {
+        "mqtt_broker": "tcp://broker.emqx.io:1883",
+        "mqtt_client_id": "OrangePi_Gateway_001",
+        "alert_topic": "fall_detection/alerts",
+        "keep_alive_seconds": 20,
+        "alert_queue_size": 10
+    },
+
+    "hardware": {
+        "buzzer_gpio_pin": 138,
+        "alarm_duration_ms": 3000
+    },
+
+    "storage": {
+        "sqlite_db_path": "fall_detection_gateway.db"
+    }
+}

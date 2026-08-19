@@ -22,13 +22,26 @@ namespace fall_detection
         };
 
         /**
+         * @brief 摔倒规则引擎参数配置（由 ConfigManager 从 config.json 读取后注入）
+         */
+        struct FallRuleConfig
+        {
+            float kptConfThreshold = 0.3f;        // 关键点置信度阈值（低于视为不可见）
+            float fallAngleThreshold = 60.0f;     // 身体轴线(肩→髋)与垂直方向夹角阈值（度）
+            float fallVelocityThreshold = 400.0f; // 髋部下坠速度阈值（像素/秒）
+            int confirmFramesThreshold = 5;       // 下坠后需连续躺倒的报警帧数
+            int staticLieThreshold = 30;          // 无下坠时持续躺倒的兜底报警帧数
+            int fallEventWindow = 15;             // 快速下坠事件的有效窗口（帧）
+        };
+
+        /**
          * @brief 摔倒规则引擎类
          * 通过身体轴线角度 + 髋部下坠速度 + 时序状态机，将静态关键点转化为动态摔倒判定
          */
         class FallRuleEngine
         {
             public:
-                FallRuleEngine();
+                explicit FallRuleEngine(const FallRuleConfig& config = FallRuleConfig());
                 ~FallRuleEngine() = default;
 
                 /**
@@ -42,20 +55,13 @@ namespace fall_detection
             private:
                 void resetState();
 
+                FallRuleConfig config_;                     // 运行时阈值配置
                 int lieConfirmCount_;                       // 躺倒连续帧计数（防抖）
                 bool hasPreviousTarget_;                    // 上一帧是否有有效目标（用于算速度）
                 float previousHipY_;                        // 上一帧髋部中点 Y 坐标
                 std::chrono::steady_clock::time_point lastTime_;  // 上一帧时间戳
                 bool fallEventPending_;                     // 快速下坠事件是否仍在时序窗口内
                 int fallEventFrames_;                       // 下坠事件发生后经过的帧数
-
-                // 阈值配置，可根据摄像头安装角度与高度调优
-                const int CONFIRM_FRAMES_THRESHOLD = 5;     // 下坠后需连续躺倒 5 帧才报警（约 0.17s）
-                const int STATIC_LIE_THRESHOLD = 30;        // 无下坠时持续躺倒 30 帧（约 1s）才报警（兜底）
-                const int FALL_EVENT_WINDOW = 15;           // 快速下坠事件的有效窗口（帧，约 0.5s）
-                const float KPT_CONF_THRESHOLD = 0.3f;      // 关键点置信度阈值（低于视为不可见）
-                const float FALL_ANGLE_THRESHOLD = 60.0f;   // 身体轴线(肩→髋)与垂直方向夹角阈值（度）
-                const float FALL_VELOCITY_THRESHOLD = 400.0f; // 髋部下坠速度阈值（像素/秒）
         };
     }
 }
