@@ -78,7 +78,6 @@ namespace fall_detection
         bool MqttClient::isConnected() const
         {
             return client_ != nullptr && client_->is_connected();
-
         }
 
         bool MqttClient::publishAlert(const std::string& topic, const vision::AlertEvent& event)

@@ -23,38 +23,37 @@ namespace fall_detection
         // 采用“单例模式”设计的日志类，保证全局只有一个日志实例
         class SysLogger
         {
-            private:
-                // 私有化构造和析构函数，防止外部随便 new 这个类
-                SysLogger() = default;
-                ~SysLogger() = default;
+        private:
+            // 私有化构造和析构函数，防止外部随便 new 这个类
+            SysLogger() = default;
+            ~SysLogger() = default;
 
-                // 禁用拷贝构造和复制操作符，确保全局变量唯一
-                SysLogger(const SysLogger&) = delete;
-                SysLogger& operator=(const SysLogger&) = delete;
+            // 禁用拷贝构造和复制操作符，确保全局变量唯一
+            SysLogger(const SysLogger&) = delete;
+            SysLogger& operator=(const SysLogger&) = delete;
 
-                // spdlog 异步日志器智能指针
-                std::shared_ptr<spdlog::async_logger> logger_;
-            
-            public:
-                //获取全局唯一实例的静态方法
-                static SysLogger& getInstance()
-                {
-                    static SysLogger instance;
-                    return instance;
-                }
+            // spdlog 异步日志器智能指针
+            std::shared_ptr<spdlog::async_logger> logger_;
+        
+        public:
+            //获取全局唯一实例的静态方法
+            static SysLogger& getInstance()
+            {
+                static SysLogger instance;
+                return instance;
+            }
 
-                // 初始化日志系统（在 main 函数最开头调用）
-                void init(const std::string& log_file_path = "logs/gateway.log");
+            // 初始化日志系统（在 main 函数最开头调用）
+            void init(const std::string& log_file_path = "logs/gateway.log");
 
-                // 设置日志最低生效级别（TRACE/DEBUG/INFO/WARN/ERROR/CRITICAL，不区分大小写）
-                void setLevel(const std::string& level);
+            // 设置日志最低生效级别（TRACE/DEBUG/INFO/WARN/ERROR/CRITICAL，不区分大小写）
+            void setLevel(const std::string& level);
 
-                // 获取日志器对象，供下面的宏调用
-                std::shared_ptr<spdlog::async_logger> getLogger()
-                {
-                    return logger_;
-                }
-
+            // 获取日志器对象，供下面的宏调用
+            std::shared_ptr<spdlog::async_logger> getLogger()
+            {
+                return logger_;
+            }
         };
     }
 }

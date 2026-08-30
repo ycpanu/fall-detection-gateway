@@ -8,24 +8,19 @@ from fastapi import FastAPI
 import paho.mqtt.client as mqtt
 from pydantic import BaseModel
 
-# ==========================================
 # 1. 全局配置与日志初始化
-# ==========================================
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("CloudBackend")
 
 MQTT_BROKER = "broker.emqx.io"
 MQTT_PORT = 1883
-# 需与网关端 apps/main.cpp 中的发布主题保持一致
-MQTT_TOPIC = "fall_detection/alerts"
+MQTT_TOPIC = "fall_detection_gateway/alerts"
 
 # 模拟内存数据库，用于存储历史报警记录（实际项目应存入 MySQL / InfluxDB）
 alert_database = []
 alert_lock = threading.Lock()
 
-# ==========================================
 # 2. Pydantic 数据模型定义
-# ==========================================
 class FallData(BaseModel):
     trigger_x: int
     trigger_y: int
@@ -37,9 +32,7 @@ class AlertEvent(BaseModel):
     timestamp: int
     data: FallData
 
-# ==========================================
 # 3. MQTT 客户端回调逻辑
-# ==========================================
 def on_connect(client, userdata, flags, reason_code, properties):
     if reason_code.is_failure:
         logger.error("连接 MQTT Broker 失败，返回码: %s", reason_code)
@@ -75,9 +68,7 @@ def trigger_notification_service(alert_event: AlertEvent):
     """
     logger.info("正在向家属微信小程序发送设备 [%s] 的摔倒预警推送...", alert_event.device_id)
 
-# ==========================================
 # 4. FastAPI 生命周期管理 (整合 MQTT)
-# ==========================================
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 
 @asynccontextmanager
@@ -104,9 +95,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Fall Detection Cloud Backend", lifespan=lifespan)
 
-# ==========================================
 # 5. RESTful API 接口 (供 Vue/React 后台或小程序调用)
-# ==========================================
 @app.get("/", tags=["Health Check"])
 async def root():
     return {"status": "ok", "message": "云端接收服务正在运行"}
@@ -118,3 +107,35 @@ async def get_history_alerts():
     """
     with alert_lock:
         return list(alert_database)
+
+
+'''
+启动步骤
+
+1. 安装依赖（fastapi 会自动带上 pydantic；main.py 用了 CallbackAPIVersion.VERSION2，需要 paho-mqtt ≥ 2.0）
+
+pip install fastapi "uvicorn[standard]" paho-mqtt
+
+2. 启动服务（在 apps/ 目录下执行）
+
+cd apps
+uvicorn main:app --host 0.0.0.0 --port 8000
+
+开发时想改代码自动重载，加 --reload：
+
+uvicorn main:app --reload
+
+3. 验证
+
+┌──────────────────────────────────┬────────────────────────────────────┐
+│               地址               │                说明                │
+├──────────────────────────────────┼────────────────────────────────────┤
+│ http://localhost:8000/           │ 健康检查，返回 {"status":"ok",...} │
+├──────────────────────────────────┼────────────────────────────────────┤
+│ http://localhost:8000/api/alerts │ 拉取历史报警记录                   │
+├──────────────────────────────────┼────────────────────────────────────┤
+│ http://localhost:8000/docs       │ Swagger 接口文档（自动生成）       │
+└──────────────────────────────────┴────────────────────────────────────┘
+
+启动后日志会显示「成功连接到 MQTT 云端 Broker」并订阅报警频道，此时网关发的摔倒报警就能被接收、存入内存列表。
+'''

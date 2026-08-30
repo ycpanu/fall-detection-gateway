@@ -30,40 +30,40 @@ namespace fall_detection
 
                 // —— 通用取值接口（点号分层访问，如 "vision.camera_device_id"）——
                 std::string getString(const std::string& key, const std::string& defaultValue = "") const;
-                int         getInt(const std::string& key, int defaultValue = 0) const;
-                double      getDouble(const std::string& key, double defaultValue = 0.0) const;
-                bool        getBool(const std::string& key, bool defaultValue = false) const;
+                int getInt(const std::string& key, int defaultValue = 0) const;
+                double getDouble(const std::string& key, double defaultValue = 0.0) const;
+                bool getBool(const std::string& key, bool defaultValue = false) const;
 
                 // —— 系统 ——
                 std::string getLogFilePath() const;
                 std::string getLogLevel() const;
 
                 // —— 视觉采集 ——
-                int         getCameraDeviceId() const;
-                int         getFrameQueueSize() const;
-                int         getVideoCacheFrames() const;
-                int         getVideoSaveFps() const;
+                int getCameraDeviceId() const;
+                int getFrameQueueSize() const;
+                int getVideoCacheFrames() const;
+                int getVideoSaveFps() const;
                 std::string getVideoOutputDir() const;
 
                 // —— 模型 ——
                 std::string getRknnModelPath() const;
-                float       getConfidenceThreshold() const;
-                float       getNmsThreshold() const;
+                float getConfidenceThreshold() const;
+                float getNmsThreshold() const;
 
                 // —— 规则引擎 ——
                 float getKptConfThreshold() const;
                 float getFallAngleThreshold() const;
                 float getFallVelocityThreshold() const;
-                int   getConfirmFramesThreshold() const;
-                int   getStaticLieThreshold() const;
-                int   getFallEventWindow() const;
+                int getConfirmFramesThreshold() const;
+                int getStaticLieThreshold() const;
+                int getFallEventWindow() const;
 
                 // —— 网络 ——
                 std::string getMqttBroker() const;
                 std::string getMqttClientId() const;
                 std::string getAlertTopic() const;
-                int         getKeepAliveSeconds() const;
-                int         getAlertQueueSize() const;
+                int getKeepAliveSeconds() const;
+                int getAlertQueueSize() const;
 
                 // —— 硬件 ——
                 int getBuzzerGpioPin() const;

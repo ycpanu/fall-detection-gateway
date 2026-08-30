@@ -27,13 +27,15 @@ namespace fall_detection
 
         bool BuzzerController::init()
         {
-            // 导出 GPIO 引脚
+            // 导出 GPIO 引脚，在 Linux sysfs 中控制 GPIO，需要向 /sys/class/gpio/export 文件写入引脚号
             if (!writeSysfs("/sys/class/gpio/export", std::to_string(gpioPin_)))
             {
                 LOG_ERROR("无法导出 GPIO 引脚 {}（可能被占用或编号不存在）: {}", gpioPin_, std::strerror(errno));
                 return false;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 等待系统生成节点
+
+            // 等待系统生成节点，内核创建对应的设备文件夹（/sys/class/gpio/gpio138）以及分配权限是一个异步过程，通常由系统 udev 守护进程来完成，需要耗费一点时间，故需要当前线程休眠 100ms
+            std::this_thread::sleep_for(std::chrono::milliseconds(100)); 
             // 设置为输出模式
             if (!writeSysfs("/sys/class/gpio/gpio" + std::to_string(gpioPin_) + "/direction", "out"))
             {
@@ -49,7 +51,7 @@ namespace fall_detection
             // 启动独立线程蜂鸣，避免阻塞网络重连逻辑
             std::thread([this, durationMs]() 
             {
-                LOG_WARN("📢 触发本地物理蜂鸣器报警！");
+                LOG_WARN("触发本地物理蜂鸣器报警！");
                 writeSysfs("/sys/class/gpio/gpio" + std::to_string(gpioPin_) + "/value", "1");
                 std::this_thread::sleep_for(std::chrono::milliseconds(durationMs));
                 writeSysfs("/sys/class/gpio/gpio" + std::to_string(gpioPin_) + "/value", "0");

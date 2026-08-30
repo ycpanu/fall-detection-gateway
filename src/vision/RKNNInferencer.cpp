@@ -244,7 +244,7 @@ namespace fall_detection
                     kp.confidence = outData[(KPT_OFFSET + k * 3 + 2) * NUM_ANCHORS + i];
                     box.keypoints.push_back(kp);
                 }
-
+   
                 candidates.push_back(box);
             }
 

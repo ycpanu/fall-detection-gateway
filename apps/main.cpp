@@ -62,6 +62,8 @@ std::string resolvePath(const std::string& baseDir, const std::string& path)
 void ensureParentDir(const std::string& filePath)
 {
     size_t pos = filePath.find_last_of('/');
+
+    // 没找到 '/' 会返回std::string::npos
     if (pos == std::string::npos)
     {
         return;
@@ -97,7 +99,7 @@ int main(int argc, char** argv)
     }
     LOG_INFO("系统启动！");
 
-    // 注册退出信号，保证 Ctrl+C / kill 时能优雅退出并刷盘日志
+    // 注册退出信号，保证 Ctrl+C / kill 时能退出并刷盘日志
     std::signal(SIGINT, handleSignal);
     std::signal(SIGTERM, handleSignal);
 

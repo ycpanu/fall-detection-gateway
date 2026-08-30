@@ -25,71 +25,71 @@ namespace fall_detection
          */
         struct DetectResult
         {
-            int classId;            // 类别ID(0:stand, 1:sit, 2:bend, 3:lie)
+            int classId;            // 类别 ID(0:stand, 1:sit, 2:bend, 3:lie)
             float confidence;       // 置信度
             int x;                  // 边界框左上角 X 坐标
             int y;                  // 左上角 Y 坐标
             int width;              // 边界框宽度
-            int height;             //
+            int height;             // 边界框高度
             std::vector<KeyPoint> keypoints; // 17个骨骼关键点集合
         };
 
         /**
-         * @brief NPU 硬件加速推理引擎 (系统的“大脑”)
+         * @brief NPU 硬件加速推理引擎
          * 负责加载 .rknn 模型，执行硬件推理，并完成 17 骨骼点解码与 NMS。
          */
         class RKNNInferencer
         {
-            public:
-                /**
-                 * @param modelPath 转换好的 .rknn 模型文件在开发板的绝对路径
-                 * @param confThreshold 置信度过滤阈值
-                 * @param nmsThreshold NMS 交并比剔除阈值
-                 */
-                RKNNInferencer(const std::string& modelPath, float confThreshold = 0.5f, float nmsThreshold = 0.45f);
-                
-                ~RKNNInferencer();
+        public:
+            /**
+             * @param modelPath 转换好的 .rknn 模型文件在开发板的绝对路径
+             * @param confThreshold 置信度过滤阈值
+             * @param nmsThreshold NMS 交并比剔除阈值
+             */
+            RKNNInferencer(const std::string& modelPath, float confThreshold = 0.5f, float nmsThreshold = 0.45f);
+            
+            ~RKNNInferencer();
 
-                bool init();
+            bool init();
 
-                /**
-                 * @brief 执行一帧图像的硬件加速推理
-                 * @param frame 从队列中取出的 OpenCV 原始图像
-                 * @param results 引用传递，用于接收解析后的检测结果列表
-                 * @return 推理是否成功
-                 */
-                bool detect(const cv::Mat& frame, std::vector<DetectResult>& results);
+            /**
+             * @brief 执行一帧图像的硬件加速推理
+             * @param frame 从队列中取出的 OpenCV 原始图像
+             * @param results 引用传递，用于接收解析后的检测结果列表
+             * @return 推理是否成功
+             */
+            bool detect(const cv::Mat& frame, std::vector<DetectResult>& results);
 
-            private:
-                std::string modelPath_;     //模型文件路径
-                rknn_context ctx_;          // RKNN 运行上下文句柄
-                bool isInitialized_;        // 模型是否初始化
+        private:
+            std::string modelPath_;     //模型文件路径
+            rknn_context ctx_;          // RKNN 运行上下文句柄
+            bool isInitialized_;        // 模型是否初始化
 
-                // 模型的输入/输出属性
-                rknn_tensor_attr* inputAttrs_;
-                rknn_tensor_attr* outputAttrs_;
-                int numInput_;
-                int numOutput_;
+            // 模型的输入/输出属性
+            rknn_tensor_attr* inputAttrs_;
+            rknn_tensor_attr* outputAttrs_;
+            int numInput_;
+            int numOutput_;
 
-                // YOLOv8 后处理阈值（由 ConfigManager 从 config.json 注入）
-                float confThreshold_;   // 置信度过滤阈值
-                float nmsThreshold_;    // NMS 交并比剔除阈值
+            // YOLOv8 后处理阈值（由 ConfigManager 从 config.json 注入）
+            float confThreshold_;   // 置信度过滤阈值
+            float nmsThreshold_;    // NMS 交并比剔除阈值
 
-                // YOLOv8n-Pose 模型解析阈值与属性配置
-                const int NUM_CLASSES = 1;              // Pose 模型类别
-                const int NUM_KEYPOINTS = 17;           // 骨骼关键点数量
+            // YOLOv8n-Pose 模型解析阈值与属性配置
+            const int NUM_CLASSES = 1;              // Pose 模型类别
+            const int NUM_KEYPOINTS = 17;           // 骨骼关键点数量
 
-            private:
-                /**
-                 *  @brief 内部辅助函数：读取 .rknn 模型文件到内存
-                 */
-                unsigned char* loadModelFile(const char* filename, int* modelSize);
+        private:
+            /**
+             *  @brief 内部辅助函数：读取 .rknn 模型文件到内存
+             */
+            unsigned char* loadModelFile(const char* filename, int* modelSize);
 
-                // 执行NMS算法，剔除重叠的废框
-                void nms(std::vector<DetectResult>& inputBoxes, std::vector<DetectResult>& outputBoxes);
+            // 执行NMS算法，剔除重叠的废框
+            void nms(std::vector<DetectResult>& inputBoxes, std::vector<DetectResult>& outputBoxes);
 
-                // 计算两个矩形框的 IoU(交并比)
-                float calculateIoU(const DetectResult& box1, const DetectResult& box2);
+            // 计算两个矩形框的 IoU(交并比)
+            float calculateIoU(const DetectResult& box1, const DetectResult& box2);
         };
     }
 }

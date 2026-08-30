@@ -95,31 +95,31 @@ namespace fall_detection
         std::string ConfigManager::getLogLevel() const     { return getString("system.log_level", "INFO"); }
 
         // —— 视觉采集 ——
-        int         ConfigManager::getCameraDeviceId() const   { return getInt("vision.camera_device_id", 0); }
-        int         ConfigManager::getFrameQueueSize() const   { return getInt("vision.frame_queue_size", 3); }
-        int         ConfigManager::getVideoCacheFrames() const { return getInt("vision.video_cache_frames", 90); }
-        int         ConfigManager::getVideoSaveFps() const     { return getInt("vision.video_save_fps", 30); }
+        int ConfigManager::getCameraDeviceId() const   { return getInt("vision.camera_device_id", 0); }
+        int ConfigManager::getFrameQueueSize() const   { return getInt("vision.frame_queue_size", 3); }
+        int ConfigManager::getVideoCacheFrames() const { return getInt("vision.video_cache_frames", 90); }
+        int ConfigManager::getVideoSaveFps() const     { return getInt("vision.video_save_fps", 30); }
         std::string ConfigManager::getVideoOutputDir() const   { return getString("vision.video_output_dir", "videos"); }
 
         // —— 模型 ——
         std::string ConfigManager::getRknnModelPath() const       { return getString("model.rknn_model_path", "./yolov8n-pose.rknn"); }
-        float       ConfigManager::getConfidenceThreshold() const { return static_cast<float>(getDouble("model.confidence_threshold", 0.5)); }
-        float       ConfigManager::getNmsThreshold() const        { return static_cast<float>(getDouble("model.nms_threshold", 0.45)); }
+        float ConfigManager::getConfidenceThreshold() const { return static_cast<float>(getDouble("model.confidence_threshold", 0.5)); }
+        float ConfigManager::getNmsThreshold() const        { return static_cast<float>(getDouble("model.nms_threshold", 0.45)); }
 
         // —— 规则引擎 ——
         float ConfigManager::getKptConfThreshold() const       { return static_cast<float>(getDouble("rule_engine.kpt_conf_threshold", 0.3)); }
         float ConfigManager::getFallAngleThreshold() const     { return static_cast<float>(getDouble("rule_engine.fall_angle_threshold", 60.0)); }
         float ConfigManager::getFallVelocityThreshold() const  { return static_cast<float>(getDouble("rule_engine.fall_velocity_threshold", 400.0)); }
-        int   ConfigManager::getConfirmFramesThreshold() const { return getInt("rule_engine.confirm_frames_threshold", 5); }
-        int   ConfigManager::getStaticLieThreshold() const     { return getInt("rule_engine.static_lie_threshold", 30); }
-        int   ConfigManager::getFallEventWindow() const        { return getInt("rule_engine.fall_event_window", 15); }
+        int ConfigManager::getConfirmFramesThreshold() const { return getInt("rule_engine.confirm_frames_threshold", 5); }
+        int ConfigManager::getStaticLieThreshold() const     { return getInt("rule_engine.static_lie_threshold", 30); }
+        int ConfigManager::getFallEventWindow() const        { return getInt("rule_engine.fall_event_window", 15); }
 
         // —— 网络 ——
         std::string ConfigManager::getMqttBroker() const       { return getString("network.mqtt_broker", "tcp://broker.emqx.io:1883"); }
         std::string ConfigManager::getMqttClientId() const     { return getString("network.mqtt_client_id", "OrangePi_Gateway_001"); }
         std::string ConfigManager::getAlertTopic() const       { return getString("network.alert_topic", "fall_detection/alerts"); }
-        int         ConfigManager::getKeepAliveSeconds() const { return getInt("network.keep_alive_seconds", 20); }
-        int         ConfigManager::getAlertQueueSize() const   { return getInt("network.alert_queue_size", 10); }
+        int ConfigManager::getKeepAliveSeconds() const { return getInt("network.keep_alive_seconds", 20); }
+        int ConfigManager::getAlertQueueSize() const   { return getInt("network.alert_queue_size", 10); }
 
         // —— 硬件 ——
         int ConfigManager::getBuzzerGpioPin() const   { return getInt("hardware.buzzer_gpio_pin", 138); }
