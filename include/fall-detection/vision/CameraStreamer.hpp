@@ -5,7 +5,7 @@
 #include <atomic>
 #include "fall-detection/concurrency/ThreadSafeQueue.hpp"
 #include "fall-detection/vision/VideoCacher.hpp"
-#include <videoio.hpp>
+#include <opencv2/videoio.hpp>
 
 namespace fall_detection
 {

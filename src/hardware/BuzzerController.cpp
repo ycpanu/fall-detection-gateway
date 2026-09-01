@@ -12,8 +12,24 @@ namespace fall_detection
         BuzzerController::BuzzerController(int gpioPin) : gpioPin_(gpioPin) {}
         BuzzerController::~BuzzerController()
         {
-            writeSysfs("/sys/class/gpio/gpio" + std::to_string(gpioPin_) + "/value", "0");
-            writeSysfs("/sys/class/gpio/unexport", std::to_string(gpioPin_));
+            // 1. 停止后台线程
+            if (isRunning_)
+            {
+                isRunning_ = false;
+                cv_.notify_one();
+                if (workerThread_.joinable())
+                {
+                    workerThread_.join();
+                }
+            }
+
+            // 2. 释放硬件资源
+            if (isInitialized_)
+            {
+                writeSysfs("/sys/class/gpio/gpio" + std::to_string(gpioPin_) + "/value", "0");
+                writeSysfs("/sys/class/gpio/unexpoert", std::to_string(gpioPin_));
+                LOG_INFO("蜂鸣器资源已安全释放。");
+            }
         }
 
         bool BuzzerController::writeSysfs(const std::string& path, const std::string& value)
@@ -21,41 +37,80 @@ namespace fall_detection
             std::ofstream fs(path);
             if (!fs.is_open()) return false;
             fs << value;
-            fs.close();
-            return true;
+            return fs.good();
         }
 
         bool BuzzerController::init()
         {
-            // 导出 GPIO 引脚，在 Linux sysfs 中控制 GPIO，需要向 /sys/class/gpio/export 文件写入引脚号
+            if (isInitialized_) return true;
+
             if (!writeSysfs("/sys/class/gpio/export", std::to_string(gpioPin_)))
             {
-                LOG_ERROR("无法导出 GPIO 引脚 {}（可能被占用或编号不存在）: {}", gpioPin_, std::strerror(errno));
+                LOG_ERROR("无法导出 GPIO 引脚 {} : {}", gpioPin_, std::strerror(errno));
                 return false;
             }
 
-            // 等待系统生成节点，内核创建对应的设备文件夹（/sys/class/gpio/gpio138）以及分配权限是一个异步过程，通常由系统 udev 守护进程来完成，需要耗费一点时间，故需要当前线程休眠 100ms
-            std::this_thread::sleep_for(std::chrono::milliseconds(100)); 
-            // 设置为输出模式
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
             if (!writeSysfs("/sys/class/gpio/gpio" + std::to_string(gpioPin_) + "/direction", "out"))
             {
-                LOG_ERROR("无法设置 GPIO 引脚 {} 为输出模式: {}", gpioPin_, std::strerror(errno));
+                LOG_ERROR("无法设置 GPIO 引脚 {} 为输出模式 : {}", gpioPin_, std::strerror(errno));
                 return false;
             }
+            LOG_INFO("蜂鸣器容灾模块初始化成功，引脚: {}", gpioPin_);
+            isInitialized_ = true;
+            isRunning_ = true;
+            return true;
+
+            // 启动常驻工作线程，彻底消灭 detach 游离线程
+            workerThread_ = std::thread(&BuzzerController::alarmWorkerLoop, this);
+            
             LOG_INFO("蜂鸣器容灾模块初始化成功，引脚: {}", gpioPin_);
             return true;
         }
 
         void BuzzerController::triggerAlarm(int durationMs) 
         {
-            // 启动独立线程蜂鸣，避免阻塞网络重连逻辑
-            std::thread([this, durationMs]() 
+            if (!isInitialized_) return;
+            
+            // 仅更新状态并唤醒工作线程，绝不阻塞主流水线
             {
-                LOG_WARN("触发本地物理蜂鸣器报警！");
+                std::lock_guard<std::mutex> lock(mtx_);
+                alarmDuration_ = durationMs;
+                alarmTriggered_ = true;
+            }
+            cv_.notify_one();
+        }
+
+        void BuzzerController::alarmWorkerLoop()
+        {
+            while(isRunning_)
+            {
+                std::unique_lock<std::mutex> lock(mtx_);
+                
+                // 阻塞休眠，零 CPU 占用，等待触发警报或线程终止信号
+                cv_.wait(lock, [this]() { return alarmTriggered_ || !isRunning_; });
+
+                if (!isRunning_) break; // 线程终止信号，退出循环
+
+                // 消耗掉触发信号，避免重复触发
+                alarmTriggered_ = false;
+                int duration = alarmDuration_.load();
+                lock.unlock();  // 释放锁，避免休眠期间占用互斥锁
+
+                LOG_WARN("蜂鸣器警报触发，持续时间: {} ms", duration);
                 writeSysfs("/sys/class/gpio/gpio" + std::to_string(gpioPin_) + "/value", "1");
-                std::this_thread::sleep_for(std::chrono::milliseconds(durationMs));
+
+                // 响应期间若系统要求退出，立即停止蜂鸣器
+                auto startTime = std::chrono::steady_clock::now();
+                while (isRunning_ && std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count() < duration)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+
                 writeSysfs("/sys/class/gpio/gpio" + std::to_string(gpioPin_) + "/value", "0");
-            }).detach();
+                LOG_INFO("蜂鸣器警报结束。");
+            }
         }
     }
 }
