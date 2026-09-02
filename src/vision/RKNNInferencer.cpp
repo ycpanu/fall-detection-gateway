@@ -2,6 +2,7 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 #include "fall-detection/vision/RKNNInferencer.hpp"
 #include "fall-detection/utils/SysLogger.hpp"
@@ -17,7 +18,6 @@ namespace fall_detection
 
         RKNNInferencer::~RKNNInferencer()
         {
-            // 析构必须销毁 RKNN 上下文，释放开发板的 NPU 内存
             if (ctx_ > 0)
             {
                 rknn_destroy(ctx_);
@@ -44,12 +44,10 @@ namespace fall_detection
                 return nullptr;
             }
 
-            // 获取文件大小
             file.seekg(0, std::ios::end);
             *modelSize = file.tellg();
             file.seekg(0, std::ios::beg);
 
-            // 分配内存并读取数据
             unsigned char* modelData = new unsigned char[*modelSize];
             file.read(reinterpret_cast<char*>(modelData), *modelSize);
             file.close();
@@ -74,9 +72,9 @@ namespace fall_detection
                 return false;
             }
 
-            // 1. 初始化 RKNN 环境，分配 NPU 资源
+            // 1. 初始化 RKNN 环境
             int ret = rknn_init(&ctx_, modelData, modelSize, 0, NULL);
-            delete[] modelData; // 数据已载入 NPU，可释放本地内存
+            delete[] modelData; 
 
             if (ret < 0)
             {
@@ -84,34 +82,50 @@ namespace fall_detection
                 return false;
             }
 
-            // 2. 查询模型的输入/输出张量(Tensor)数量
+            // 2. 严格校验查询返回值
             rknn_input_output_num ioNum;
-            rknn_query(ctx_, RKNN_QUERY_IN_OUT_NUM, &ioNum, sizeof(ioNum));
+            ret = rknn_query(ctx_, RKNN_QUERY_IN_OUT_NUM, &ioNum, sizeof(ioNum));
+            if (ret < 0)
+            {
+                LOG_ERROR("查询输入输出张量数量失败！错误码：{}", ret);
+                return false;
+            }
+            
             numInput_ = ioNum.n_input;
             numOutput_ = ioNum.n_output;
 
             inputAttrs_ = new rknn_tensor_attr[numInput_];
             outputAttrs_ = new rknn_tensor_attr[numOutput_];
 
-            // 3. 获取输入张量属性，告诉我们需要输入多大的图片
+            // 3. 获取输入张量属性
             for (int i = 0; i < numInput_; i++)
             {
                 memset(&inputAttrs_[i], 0, sizeof(rknn_tensor_attr));
                 inputAttrs_[i].index = i;
-                rknn_query(ctx_, RKNN_QUERY_INPUT_ATTR, &(inputAttrs_[i]), sizeof(rknn_tensor_attr));
-
+                ret = rknn_query(ctx_, RKNN_QUERY_INPUT_ATTR, &(inputAttrs_[i]), sizeof(rknn_tensor_attr));
+                if (ret < 0)
+                {
+                    LOG_ERROR("查询输入张量 {} 属性失败！错误码：{}", i, ret);
+                    return false;
+                }
             }
 
-            // 4. 获取输出张量的属性，告诉我们会输出怎样格式的结果
+            // 4. 获取输出张量属性
             for (int i = 0; i < numOutput_; i++)
             {
                 memset(&outputAttrs_[i], 0, sizeof(rknn_tensor_attr));
                 outputAttrs_[i].index = i;
-                rknn_query(ctx_, RKNN_QUERY_OUTPUT_ATTR, &(outputAttrs_[i]), sizeof(rknn_tensor_attr));
+                ret = rknn_query(ctx_, RKNN_QUERY_OUTPUT_ATTR, &(outputAttrs_[i]), sizeof(rknn_tensor_attr));
+                if (ret < 0)
+                {
+                    LOG_ERROR("查询输出张量 {} 属性失败！错误码：{}", i, ret);
+                    return false;
+                }
                 LOG_INFO("输出张量 {}: n_dims={}, dims=[{}, {}, {}, {}], n_elems={}", i,
                         outputAttrs_[i].n_dims, outputAttrs_[i].dims[0], outputAttrs_[i].dims[1],
                         outputAttrs_[i].dims[2], outputAttrs_[i].dims[3], outputAttrs_[i].n_elems);
             }
+            
             LOG_INFO("成功加载 RKNN 模型！模型期望输入尺寸：宽={} 高={} 通道={}",inputAttrs_[0].dims[1], inputAttrs_[0].dims[2], inputAttrs_[0].dims[3]);
 
             isInitialized_ = true;
@@ -131,15 +145,12 @@ namespace fall_detection
                 return false;
             }
 
-            // 1. 图像预处理，获取模型需要的宽高
             int reqWidth = inputAttrs_[0].dims[1];
             int reqHeight = inputAttrs_[0].dims[2];
 
             cv::Mat rgbFrame;
-            // OpenCV 默认 BGR，需要转换成 RGB
             cv::cvtColor(frame, rgbFrame, cv::COLOR_BGR2RGB);
 
-            // Letterbox 缩放：保持宽高比，不足部分用灰边(114)填充，避免画面拉伸变形
             float scale = std::min(static_cast<float>(reqWidth) / rgbFrame.cols,
                                 static_cast<float>(reqHeight) / rgbFrame.rows);
             int newW = static_cast<int>(std::round(rgbFrame.cols * scale));
@@ -152,17 +163,15 @@ namespace fall_detection
             cv::Mat letterboxed(reqHeight, reqWidth, CV_8UC3, cv::Scalar(114, 114, 114));
             resized.copyTo(letterboxed(cv::Rect(padW, padH, newW, newH)));
 
-            // 2. NPU 硬件推理
             rknn_input inputs[1];
             memset(inputs, 0, sizeof(inputs));
             inputs[0].index = 0;
-            inputs[0].type = RKNN_TENSOR_UINT8;     // 图片像素格式一般为 unit8
+            inputs[0].type = RKNN_TENSOR_UINT8;     
             inputs[0].size = letterboxed.cols * letterboxed.rows * letterboxed.channels();
-            inputs[0].fmt = RKNN_TENSOR_NHWC;       // 数据排布格式 (N:批次, H:高, W:宽, C:通道)
-            inputs[0].buf = letterboxed.data;       // 将OpenCV 的图像数据指针直接给 NPU
+            inputs[0].fmt = RKNN_TENSOR_NHWC;       
+            inputs[0].buf = letterboxed.data;       
             inputs[0].pass_through = 0;
 
-            // 将数据推入 NPU 显存
             int ret = rknn_inputs_set(ctx_, numInput_, inputs);
             if (ret < 0)
             {
@@ -170,7 +179,6 @@ namespace fall_detection
                 return false;
             }
 
-            // 一键启动极速硬件计算
             ret = rknn_run(ctx_, NULL);
             if (ret < 0)
             {
@@ -178,63 +186,47 @@ namespace fall_detection
                 return false;
             }
 
-            // 3. 获取解析结果
-            rknn_output outputs[numOutput_];
-            memset(outputs, 0, sizeof(outputs));
+            // 修复 VLA 变长数组问题，使用标准的 std::vector 容器
+            std::vector<rknn_output> outputs(numOutput_);
+            memset(outputs.data(), 0, sizeof(rknn_output) * numOutput_);
             for (int i = 0; i < numOutput_; i++)
             {
-                outputs[i].want_float = 1;      // 强制要求 NPU 把 INT8 的结果反量化为 float32
+                outputs[i].want_float = 1;      
             }
 
-            // 从 NPU 取回计算结果
-            ret = rknn_outputs_get(ctx_, numOutput_, outputs, NULL);
+            // 传入 .data() 获取底层指针
+            ret = rknn_outputs_get(ctx_, numOutput_, outputs.data(), NULL);
             if (ret < 0)
             {
                 LOG_ERROR("rknn_outputs_get 失败！错误码：{}", ret);
                 return false;
             }
 
-            // 在实际的 YOLOv8 部署中，这里需要数百行代码来执行“非极大值抑制(NMS)”和“锚框解码”。
-            // 为了保持底层基建框架的纯粹性，这部分复杂的数学解析我们会在后续的 
-            // 规则引擎 (FallRuleEngine) 中分离处理。
-
-            // 解析完毕后，必须释放输出内存，防止内存泄露
-
             float* outData = static_cast<float*>(outputs[0].buf);
             std::vector<DetectResult> candidates;
 
-            // YOLOv8-Pose 每个锚框的属性布局（属性切片，跨度为 NUM_ANCHORS）：
-            // [0..3] 边框 cx,cy,w,h   [4] 类别置信度(person)   [5..55] 17 个关键点(x,y,conf)
-            const int KPT_OFFSET = 4 + NUM_CLASSES;                 // 关键点数据起始索引 = 5
-            const int TOTAL_ATTR = KPT_OFFSET + NUM_KEYPOINTS * 3;  // 4 + 1 + 17*3 = 56
+            const int KPT_OFFSET = 4 + NUM_CLASSES;                 
+            const int TOTAL_ATTR = KPT_OFFSET + NUM_KEYPOINTS * 3;  
             const int NUM_ANCHORS = static_cast<int>(outputAttrs_[0].n_elems) / TOTAL_ATTR;
 
             for (int i = 0; i < NUM_ANCHORS; i++)
             {
-                // Pose 模型只有 person 一类，类别置信度即第 4 个属性
                 float clsConf = outData[4 * NUM_ANCHORS + i];
-                if (clsConf <= confThreshold_)
-                {
-                    continue;
-                }
+                if (clsConf <= confThreshold_) continue;
 
-                // 解析边框中心点与宽高
                 float cx = outData[0 * NUM_ANCHORS + i];
                 float cy = outData[1 * NUM_ANCHORS + i];
                 float w  = outData[2 * NUM_ANCHORS + i];
                 float h  = outData[3 * NUM_ANCHORS + i];
 
-                // 边框解码：模型输出是相对 reqWidth x reqHeight 的像素，
-                // 映射回原图需先减 letterbox 灰边偏移，再除以缩放比例
                 DetectResult box;
-                box.classId = 0;   // person
+                box.classId = 0;   
                 box.confidence = clsConf;
                 box.x = static_cast<int>((cx - w / 2.0f - padW) / scale);
                 box.y = static_cast<int>((cy - h / 2.0f - padH) / scale);
                 box.width = static_cast<int>(w / scale);
                 box.height = static_cast<int>(h / scale);
 
-                // 解码 17 个骨骼关键点（关键点坐标同样需逆映射到原图）
                 box.keypoints.reserve(NUM_KEYPOINTS);
                 for (int k = 0; k < NUM_KEYPOINTS; k++)
                 {
@@ -248,10 +240,8 @@ namespace fall_detection
                 candidates.push_back(box);
             }
 
-            // 非极大值抑制(NMS) - 消除重影
             nms(candidates, results);
 
-            // 诊断日志：定位“检测不到摔倒”时问题在后处理还是判断引擎
             if (results.empty())
             {
                 LOG_TRACE("本帧未解析出有效人体（候选框 {} 个，confThreshold={}）", candidates.size(), confThreshold_);
@@ -262,8 +252,8 @@ namespace fall_detection
                           results.size(), results[0].keypoints.size());
             }
 
-            // 释放 NPU 输出内存
-            rknn_outputs_release(ctx_, numOutput_, outputs);
+            // 传入 .data() 获取底层指针
+            rknn_outputs_release(ctx_, numOutput_, outputs.data());
 
             return true;
         }
@@ -272,7 +262,6 @@ namespace fall_detection
         {
             outputBoxes.clear();
 
-            // 按照置信度从高到低排序，优先保留最确定的预测框
             std::sort(inputBoxes.begin(), inputBoxes.end(), [](const DetectResult& a, const DetectResult& b)
             {
                 return a.confidence > b.confidence;
@@ -284,9 +273,8 @@ namespace fall_detection
             {
                 if (isSuppressed[i]) continue;
 
-                outputBoxes.push_back(inputBoxes[i]);   // 保留最高分的框
+                outputBoxes.push_back(inputBoxes[i]);   
 
-                // 检查后面所有的框，如果和当前框的 IoU 超过阈值，直接抹杀
                 for (size_t j = i + 1; j < inputBoxes.size(); j++)
                 {
                     if (!isSuppressed[j] && inputBoxes[i].classId == inputBoxes[j].classId)
@@ -303,24 +291,20 @@ namespace fall_detection
 
         float RKNNInferencer::calculateIoU(const DetectResult& box1, const DetectResult& box2)
         {
-            // 计算交集的坐标
             int x1 = std::max(box1.x, box2.x);
             int y1 = std::max(box1.y, box2.y);
             int x2 = std::min(box1.x + box1.width, box2.x + box2.width);
             int y2 = std::min(box1.y + box1.height, box2.y + box2.height);
 
-            // 如果没有交集
             if (x1 >= x2 || y1 >= y2) return 0.0f;
 
             float intersectionArea = static_cast<float>((x2 - x1) * (y2 - y1));
             float box1Area = static_cast<float>(box1.width * box1.height);
             float box2Area = static_cast<float>(box2.width * box2.height);
 
-            // 并集面积为 0（两个框都没有有效面积）时直接返回 0，避免除零
             float unionArea = box1Area + box2Area - intersectionArea;
             if (unionArea <= 0.0f) return 0.0f;
 
-            // 经典的 IoU 公式：交集面积 / 并集面积
             return intersectionArea / unionArea;
         }
     }
