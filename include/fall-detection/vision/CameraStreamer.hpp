@@ -53,7 +53,7 @@ namespace fall_detection
             cv::VideoCapture capture_;              // OpenCV 视频捕获对象
             concurrency::ThreadSafeQueue<cv::Mat>& frameQueue_;  // 引用外部图像队列
             std::thread workerThread_;              // 独立工作线程
-            std::atomic<bool> isRunning_;           // 线程运行状态标志位
+            std::atomic<bool> isRunning_{false};           // 线程运行状态标志位
         };
     }
 }

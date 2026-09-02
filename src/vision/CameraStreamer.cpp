@@ -138,8 +138,9 @@ namespace fall_detection
                 // 将最新画面压入队列
                 frameQueue_.push(frame);
                 videoCacher_.pushFrame(frame);
-                // 轻微休眠，释放部分 CPU 调度权（例如限制在 30fps 左右）
-                std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                
+                // 应用真实计算的动态延时，解决回放倍速失真问题
+                std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
             }
         }
     }

@@ -3,16 +3,10 @@
 #include <chrono>
 #include <vector>
 #include <atomic>
-#include <memory>
-#include <string>
 #include <csignal>
-#include <unistd.h>
-#include <limits.h>
-#include <sys/stat.h>
-#include <opencv2/opencv.hpp>
 
-#include "fall-detection/utils/SysLogger.hpp"
 #include "fall-detection/utils/ConfigManager.hpp"
+#include "fall-detection/utils/SysLogger.hpp"
 #include "fall-detection/concurrency/ThreadSafeQueue.hpp"
 #include "fall-detection/vision/CameraStreamer.hpp"
 #include "fall-detection/vision/VideoCacher.hpp"
@@ -24,109 +18,57 @@
 
 using namespace fall_detection;
 
-// 全局运行标志：供信号处理器置 0，主循环与报警线程据此安全退出
+// 信号驱动的优雅退出标志
 volatile std::sig_atomic_t g_running = 1;
-
-void handleSignal(int sig)
+void signalHandler(int signum) 
 {
-    (void)sig;
-    g_running = 0;   // 信号处理器内只做标志位翻转，不进行任何加锁/内存分配
+    g_running = 0;
 }
 
-// 获取当前可执行文件所在目录（Linux 下通过 /proc/self/exe）
-std::string getExecutableDir()
+int main(int argc, char* argv[])
 {
-    char buf[PATH_MAX];
-    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (len <= 0)
-    {
-        return ".";
-    }
-    buf[len] = '\0';
-    std::string exePath(buf);
-    size_t pos = exePath.find_last_of('/');
-    return (pos == std::string::npos) ? "." : exePath.substr(0, pos);
-}
+    std::signal(SIGINT, signalHandler);
+    std::signal(SIGTERM, signalHandler);
 
-// 相对路径统一基于可执行文件目录解析，绝对路径原样返回
-std::string resolvePath(const std::string& baseDir, const std::string& path)
-{
-    if (path.empty() || path[0] == '/')
-    {
-        return path;
-    }
-    return baseDir + "/" + path;
-}
-
-// 确保某个文件的父目录存在（尽力而为，已存在则忽略）
-void ensureParentDir(const std::string& filePath)
-{
-    size_t pos = filePath.find_last_of('/');
-
-    // 没找到 '/' 会返回std::string::npos
-    if (pos == std::string::npos)
-    {
-        return;
-    }
-    std::string dir = filePath.substr(0, pos);
-    if (!dir.empty())
-    {
-        mkdir(dir.c_str(), 0755);
-    }
-}
-
-int main(int argc, char** argv)
-{
-    std::string exeDir = getExecutableDir();
-
-    // 1. 加载全局配置（此时日志系统尚未初始化，ConfigManager 内部错误只打印到 stderr）
-    utils::ConfigManager& config = utils::ConfigManager::getInstance();
-    bool configOk = config.load("configs/config.json");
-
-    // 2. 初始化日志系统：路径与级别均来自配置
-    std::string logPath = resolvePath(exeDir, config.getLogFilePath());
-    ensureParentDir(logPath);
-    utils::SysLogger::getInstance().init(logPath);
+    // 1. 初始化配置与全局日志
+    auto& config = utils::ConfigManager::getInstance();
+    config.load("configs/config.json");
+    
+    utils::SysLogger::getInstance().init(config.getLogFilePath());
     utils::SysLogger::getInstance().setLevel(config.getLogLevel());
+    
+    LOG_INFO("==================================================");
+    LOG_INFO("边缘网关系统启动 - 企业级高可用容灾版");
+    LOG_INFO("==================================================");
 
-    if (configOk)
-    {
-        LOG_INFO("配置文件加载成功！");
-    }
-    else
-    {
-        LOG_ERROR("配置文件加载失败，将使用内置默认参数继续运行！");
-    }
-    LOG_INFO("系统启动！");
-
-    // 注册退出信号，保证 Ctrl+C / kill 时能退出并刷盘日志
-    std::signal(SIGINT, handleSignal);
-    std::signal(SIGTERM, handleSignal);
-
-    // 初始化底层硬件与容灾模块
+    // 2. 初始化降级容灾模块 (修复：增加严格的状态校验与降级告警)
     hardware::BuzzerController buzzer(config.getBuzzerGpioPin());
-    buzzer.init();
-
-    utils::LocalDatabase db(config.getSqliteDbPath());
-    db.init();
-
-    // 初始化网络通信层
-    network::MqttClient mqttClient(config.getMqttBroker(), config.getMqttClientId(), config.getKeepAliveSeconds());
-    mqttClient.connect();
-
-    // 初始化 NPU 硬件推理
-    vision::RKNNInferencer inferencer(config.getRknnModelPath(),
-                                      config.getConfidenceThreshold(),
-                                      config.getNmsThreshold());
-    if (!inferencer.init())
+    if (!buzzer.init()) 
     {
-        LOG_ERROR("NPU 模型加载失败！");
+        LOG_CRITICAL("【降级警告】蜂鸣器物理容灾模块初始化失败！断网时将无法发出声光报警！");
+    }
+
+    utils::LocalDatabase localDb(config.getSqliteDbPath());
+    if (!localDb.init()) 
+    {
+        LOG_CRITICAL("【降级警告】本地 SQLite 容灾数据库初始化失败！断网时报警数据将面临丢失风险！");
+    }
+
+    network::MqttClient mqttClient(config.getMqttBroker(), config.getMqttClientId(), config.getKeepAliveSeconds());
+    if (!mqttClient.connect()) 
+    {
+        LOG_CRITICAL("【降级警告】MQTT 云端连接失败！系统将暂时依赖本地容灾模块维持运行！");
+    }
+
+    // 3. 初始化核心视觉大脑 (修复：核心组件失败必须熔断拦截)
+    vision::RKNNInferencer inferencer(config.getRknnModelPath(), config.getConfidenceThreshold(), config.getNmsThreshold());
+    if (!inferencer.init()) 
+    {
+        LOG_ERROR("致命错误：NPU 硬件加速推理模型加载失败，系统即将强制退出！");
         return -1;
     }
 
-    // 初始化摔倒逻辑规则引擎
     vision::FallRuleConfig ruleConfig;
-    ruleConfig.kptConfThreshold = config.getKptConfThreshold();
     ruleConfig.fallAngleThreshold = config.getFallAngleThreshold();
     ruleConfig.fallVelocityThreshold = config.getFallVelocityThreshold();
     ruleConfig.confirmFramesThreshold = config.getConfirmFramesThreshold();
@@ -134,136 +76,98 @@ int main(int argc, char** argv)
     ruleConfig.fallEventWindow = config.getFallEventWindow();
     vision::FallRuleEngine ruleEngine(ruleConfig);
 
-    // 视频缓存
-    vision::VideoCacher videoCacher(config.getVideoCacheFrames());
-
-    // 实例化底层通信队列
+    // 4. 初始化流水线通信基础设施
     concurrency::ThreadSafeQueue<cv::Mat> frameQueue(config.getFrameQueueSize());
     concurrency::ThreadSafeQueue<vision::AlertEvent> alertQueue(config.getAlertQueueSize());
+    vision::VideoCacher videoCacher(config.getVideoCacheFrames());
 
-    // 视频落盘目录
-    std::string videoDir = resolvePath(exeDir, config.getVideoOutputDir());
-    mkdir(videoDir.c_str(), 0755);
-
-    // 线程 1：根据启动参数选择视频源
-    // 用法：无参数 -> 摄像头设备；带文件路径参数 -> 回放本地视频（模拟回归测试）
+    // 5. 启动“眼睛”
     std::unique_ptr<vision::CameraStreamer> streamer;
-    if (argc >= 2)
+    if (argc > 1) 
     {
-        streamer = std::make_unique<vision::CameraStreamer>(std::string(argv[1]), frameQueue, videoCacher);
-    }
-    else
+        streamer = std::make_unique<vision::CameraStreamer>(argv[1], frameQueue, videoCacher);
+    } 
+    else 
     {
         streamer = std::make_unique<vision::CameraStreamer>(config.getCameraDeviceId(), frameQueue, videoCacher);
     }
 
-    if (!streamer->start())
+    if (!streamer->start()) 
     {
-        LOG_ERROR("视频源启动失败！");
+        LOG_ERROR("致命错误：视频流采集模块启动失败！");
         return -1;
     }
 
-    // 线程 2：启动报警响应线程
-    std::string alertTopic = config.getAlertTopic();
-    int alarmDurationMs = config.getAlarmDurationMs();
-    std::thread alertThread([&]()
+    // 6. 启动预警响应后台线程 (消费者)
+    std::thread alertThread([&]() 
     {
-        LOG_INFO("网络通信线程已启动，正在监听报警事件...");
-        while (g_running)
+        while (g_running) 
         {
             vision::AlertEvent event;
-
-            // 带超时阻塞等待，超时后回到循环检查退出标志
-            if (!alertQueue.wait_for_and_pop(event, std::chrono::milliseconds(500)))
+            // 采用带超时的出队，确保关机时能及时打破死锁
+            if (alertQueue.wait_for_and_pop(event, std::chrono::milliseconds(500))) 
             {
-                continue;
-            }
-
-            if (event.isFall)
-            {
-                LOG_WARN("处理报警事件！触发时间戳：{}", event.timestamp);
-
-                // 触发本地蜂鸣器
-                buzzer.triggerAlarm(alarmDurationMs);
-
-                // Store-and-Forward 机制
-                if (mqttClient.isConnected())
+                if (event.isFall) 
                 {
-                    // 网络在线，尝试续传历史积压报警事件
-                    auto pendingAlerts = db.getPendingAlerts();
-                    for (const auto& pending : pendingAlerts)
+                    LOG_INFO("报警线程响应：合成现场取证视频并联动声光告警...");
+                    
+                    event.videoPath = config.getVideoOutputDir() + "/fall_" + std::to_string(event.timestamp) + ".mp4";
+                    videoCacher.saveVideoAsync(event.videoPath, config.getVideoSaveFps());
+                    buzzer.triggerAlarm(config.getAlarmDurationMs());
+
+                    // Store-and-Forward 容灾上报闭环
+                    if (mqttClient.isConnected()) 
                     {
-                        if (mqttClient.publishAlert(alertTopic, pending))
+                        auto pendingAlerts = localDb.getPendingAlerts();
+                        for (const auto& pa : pendingAlerts) 
                         {
-                            db.markAsUploaded(pending.dbId);
+                            if (mqttClient.publishAlert(config.getAlertTopic(), pa)) 
+                            {
+                                localDb.markAsUploaded(pa.dbId);
+                            }
                         }
-                    }
-
-                    // 发布当前的最新报警
-                    if (mqttClient.publishAlert(alertTopic, event))
+                        if (!mqttClient.publishAlert(config.getAlertTopic(), event)) 
+                        {
+                            localDb.saveAlert(event);
+                        }
+                    } 
+                    else 
                     {
-                        LOG_INFO("报警已成功上传至云端！附带现场视频路径：{}", event.videoPath);
+                        localDb.saveAlert(event);
                     }
-                    else
-                    {
-                        // 发送意外则本地保存
-                        db.saveAlert(event);
-                    }
-                }
-                else
-                {
-                    db.saveAlert(event);
                 }
             }
         }
     });
 
-    // 线程 3：主线程 AI 视觉与逻辑流水线
-    LOG_INFO("主线程已启动，系统开始运行...");
-
-    while (g_running)
+    // 7. AI 主干视觉流水线 (生产者)
+    LOG_INFO("AI 视觉主干流水线已就绪，进入实时监测模式...");
+    while (g_running) 
     {
-        cv::Mat currentFrame;
-        if (!frameQueue.wait_for_and_pop(currentFrame, std::chrono::milliseconds(500)))
-        {
-            continue;
-        }
-
-        if (!currentFrame.empty())
+        cv::Mat frame;
+        if (frameQueue.wait_for_and_pop(frame, std::chrono::milliseconds(500))) 
         {
             std::vector<vision::DetectResult> aiResults;
-
-            // NPU 特征推理
-            if (inferencer.detect(currentFrame, aiResults))
+            if (inferencer.detect(frame, aiResults)) 
             {
                 vision::AlertEvent event;
-
-                // 摔倒判断（高宽比 + 时序下坠速度）
-                if (ruleEngine.processFrame(aiResults, event))
+                if (ruleEngine.processFrame(aiResults, event)) 
                 {
-                    LOG_WARN("摔倒事件发生！启动视频截取...");
-
-                    // 异步保存前 N 秒视频
-                    std::string videoName = videoDir + "/fall_record_" + std::to_string(event.timestamp) + ".mp4";
-                    videoCacher.saveVideoAsync(videoName, config.getVideoSaveFps());
-                    event.videoPath = videoName;
-
-                    // 将事件放入队列交由后台线程处理
                     alertQueue.push(event);
                 }
             }
         }
     }
 
-    // 关闭系统
+    // 8. 捕获信号并执行优雅退出
+    LOG_INFO("接收到退出信号，正在安全释放所有系统组件...");
     streamer->stop();
-
-    if (alertThread.joinable())
+    if (alertThread.joinable()) 
     {
         alertThread.join();
     }
-
     mqttClient.disconnect();
+    
     LOG_INFO("系统资源释放完毕，安全退出！");
     return 0;
 }

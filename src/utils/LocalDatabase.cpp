@@ -21,6 +21,8 @@ namespace fall_detection
             if (sqlite3_open(dbPath_.c_str(), &db_) != SQLITE_OK)
             {
                 LOG_ERROR("无法打开本地数据库：{}", sqlite3_errmsg(db_));
+                sqlite3_close(db_);
+                db_ = nullptr;
                 return false;
             }
 
