@@ -4,6 +4,9 @@
 #include <vector>
 #include <atomic>
 #include <csignal>
+#include <unistd.h>
+#include <limits.h>
+#include <opencv2/opencv.hpp>
 
 #include "fall-detection/utils/ConfigManager.hpp"
 #include "fall-detection/utils/SysLogger.hpp"
@@ -15,6 +18,8 @@
 #include "fall-detection/network/MqttClient.hpp"
 #include "fall-detection/hardware/BuzzerController.hpp"
 #include "fall-detection/utils/LocalDatabase.hpp"
+#include "fall-detection/utils/SysLogger.hpp"
+// #include <syslog.h>
 
 using namespace fall_detection;
 
@@ -29,6 +34,24 @@ int main(int argc, char* argv[])
 {
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
+
+    // 锚定系统工作目录，解决 Systemd 后台运行的路径问题
+    char exePath[PATH_MAX];
+    ssize_t count = readlink("/proc/self/exe", exePath, PATH_MAX);
+    if (count != -1)
+    {
+        std::string path(exePath, count);
+
+        // 可执行文件在 bin/ 目录下，所以截取两次获取到的项目根目录
+        std::string binDir = path.substr(0, path.find_last_of('/'));
+        std::string rootDir = binDir + "/..";
+
+        // 强制切换到当前工作目录
+        if (chdir(rootDir.c_str()) != 0)
+        {
+            std::cerr << "警告：无法切换工作目录到 " << rootDir << std::endl;
+        }
+    }
 
     // 1. 初始化配置与全局日志
     auto& config = utils::ConfigManager::getInstance();
