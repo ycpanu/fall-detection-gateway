@@ -1,0 +1,23 @@
+[Unit]
+Description=Enterprise Fall Detection Edge Gateway
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+# 注意：部署时请将 /path/to 替换为香橙派上项目的真实绝对路径
+WorkingDirectory=/path/to/fall-detection-gateway
+ExecStart=/path/to/fall-detection-gateway/bin/fall_detection_gateway
+
+# 核心容灾：崩溃自动拉起
+Restart=always
+RestartSec=5
+
+# 日志转交 Linux 系统日志
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=FallGateway
+
+[Install]
+WantedBy=multi-user.target

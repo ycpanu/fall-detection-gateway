@@ -1,22 +1,27 @@
-# CMake 外部编译生成的缓存与中间产物
+# 编译与构建产物
 build/
-
-# 交叉编译所需的目标机系统根目录
-sysroot/
-fall_gateway
-
-# VS Code 本地编辑器配置
-.vscode/
-
-# Claude Code 本地配置
-.claude/
-
-# 编译输出的可执行文件
 bin/
-
-# 操作系统生成的临时文件
-.DS_Store
-Thumbs.db
-
-logs/
+sysroot/
 lib/
+CMakeCache.txt
+CMakeFiles/
+
+# 运行时动态生成的数据
+logs/*
+!logs/.gitkeep
+videos/*
+!videos/.gitkeep
+*.db
+*.db-journal
+
+# 模型文件 (体积过大，应走 Git LFS 或外部存储)
+models/*.onnx
+models/*.rknn
+models/*.pt
+models/check*.onnx
+
+# Python 与编辑器缓存
+__pycache__/
+*.pyc
+.claude/
+.vscode/
