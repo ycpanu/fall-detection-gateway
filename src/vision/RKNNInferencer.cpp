@@ -158,6 +158,9 @@ namespace fall_detection
             int padW = (reqWidth - newW) / 2;
             int padH = (reqHeight - newH) / 2;
 
+            // 消除魔法数字，定义为明确的常量
+            constexpr int LETTERBOX_PAD_COLOR = 114;
+
             cv::Mat resized;
             cv::resize(rgbFrame, resized, cv::Size(newW, newH));
             cv::Mat letterboxed(reqHeight, reqWidth, CV_8UC3, cv::Scalar(114, 114, 114));

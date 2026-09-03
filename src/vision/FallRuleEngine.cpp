@@ -1,8 +1,11 @@
 #include "fall-detection/vision/FallRuleEngine.hpp"
 #include "fall-detection/utils/SysLogger.hpp"
 
+#define _USE_MATH_DEFINES   // 必须加在 cmath 之前，否则 M_PI 等宏无法生效
 #include <cmath>
 #include <algorithm>
+
+
 
 namespace fall_detection
 {
@@ -85,7 +88,7 @@ namespace fall_detection
             // 6. 身体轴线（肩→髋）与垂直方向夹角
             float dx = hipX - shoulderX;
             float dy = hipY - shoulderY;
-            float angle = std::atan2(std::fabs(dx), std::fabs(dy)) * 180.0 / 3.14159265358979;
+            float angle = std::atan2(std::fabs(dx), std::fabs(dy)) * 180.0 / M_PI;
 
             // 7. 计算髋部下坠速度（图像 y 向下，下坠时 hipY 增大 → 速度为正）
             auto currentTime = std::chrono::steady_clock::now();
