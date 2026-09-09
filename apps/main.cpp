@@ -19,6 +19,8 @@
 #include "fall-detection/hardware/BuzzerController.hpp"
 #include "fall-detection/utils/LocalDatabase.hpp"
 #include "fall-detection/utils/SysLogger.hpp"
+#include <nlohmann/json.hpp>
+#include "fall-detection/network/LiveStreamer.hpp"
 // #include <syslog.h>
 
 using namespace fall_detection;
@@ -77,10 +79,48 @@ int main(int argc, char* argv[])
         LOG_CRITICAL("【降级警告】本地 SQLite 容灾数据库初始化失败！断网时报警数据将面临丢失风险！");
     }
 
+    network::LiveStreamer liveStreamer(640, 480, 30);
     network::MqttClient mqttClient(config.getMqttBroker(), config.getMqttClientId(), config.getKeepAliveSeconds());
-    if (!mqttClient.connect()) 
+
+    // 注册 MQTT 信息回调，处理小程序发来的指令
+    mqttClient.setMessageCallback([&](const std::string& topic, const std::string& payload)
     {
-        LOG_CRITICAL("【降级警告】MQTT 云端连接失败！系统将暂时依赖本地容灾模块维持运行！");
+        try
+        {
+            auto json = nlohmann::json::parse(payload);
+            if (json.contains("cmd"))
+            {
+                std::string cmd = json["cmd"];
+                if (cmd == "start_live")
+                {
+                    std::string url = json["rtmp_url"];
+                    LOG_INFO("收到小程序请求，准备推流至：{}", url);
+                    liveStreamer.start(url);
+                }
+                else if(cmd == "stop_live")
+                {
+                    LOG_INFO("收到小程序请求，停止推流");
+                    liveStreamer.stop();
+                }
+            }
+        }
+        catch (const std::exception& e)
+        {
+            LOG_ERROR("解析 MQTT 指令失败：{}", e.what());
+        }
+        
+    });
+
+    // 连接云端
+    if (!mqttClient.connect())
+    {
+        LOG_CRITICAL("MQTT 云端连接失败！系统将暂时依赖本地容灾模块维持运行！");
+    }
+    else
+    {
+        // 连接成功后，订阅指令主题 (主题名带上设备ID，防止多设备串线)
+        std::string cmdTopic = "fall_detection/commands/" + config.getMqttClientId();
+        mqttClient.subscribe(cmdTopic);
     }
 
     // 3. 初始化核心视觉大脑 (修复：核心组件失败必须熔断拦截)
@@ -170,6 +210,11 @@ int main(int argc, char* argv[])
         cv::Mat frame;
         if (frameQueue.wait_for_and_pop(frame, std::chrono::milliseconds(500))) 
         {
+            // 如果正在推流，则将最新画面压入直播队列
+            if (liveStreamer.isStreaming())
+            {
+                liveStreamer.pushFrame(frame);
+            }
             std::vector<vision::DetectResult> aiResults;
             if (inferencer.detect(frame, aiResults)) 
             {
@@ -185,6 +230,7 @@ int main(int argc, char* argv[])
     // 8. 捕获信号并执行优雅退出
     LOG_INFO("接收到退出信号，正在安全释放所有系统组件...");
     streamer->stop();
+    liveStreamer.stop();
     if (alertThread.joinable()) 
     {
         alertThread.join();

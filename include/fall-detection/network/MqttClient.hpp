@@ -2,6 +2,7 @@
 
 #include <string>
 #include <memory>
+#include <functional>
 #include <mqtt/async_client.h>
 #include "fall-detection/vision/FallRuleEngine.hpp"
 
@@ -11,11 +12,13 @@ namespace fall_detection
     {
         /**
          * @brief MQTT 异步通信客户端类
-         * 负责维护与云端物联网平台的长连接，当确认摔倒时，将报警事件序列化为 JSON 格式，并以 Qos 1（至少到达一次）的级别发布到云端
+         * 继承 virtual public mqtt::callback 以接收云端下发的消息
          */
-        class MqttClient
+        class MqttClient : public virtual mqtt::callback
         {
             public:
+                // 定义回调函数类型，参数为（主题，消息内容）
+                using MessageCallback = std::function<void(const std::string& topic, const std::string& payload)>;
                 /**
                  * @brief 构造函数
                  * @param serverAddress MQTT 服务器/Broker 的地址 (例如 "tcp://broker.emqx.io:1883")
@@ -51,6 +54,19 @@ namespace fall_detection
                  * @return 是否已连接
                  */
                 bool isConnected() const;
+
+                // 设置消息接收回调函数
+                void setMessageCallback(MessageCallback callback);
+
+                // 订阅指定主题
+                bool subscribe(const std::string& topic, int qos = 1);
+
+            protected:
+                // 重写 Paho MQTT 的底层消息到达回调
+                void message_arrived(mqtt::const_message_ptr msg) override;
+
+                // 重写连接断开回调
+                void connection_lost(const std::string& cause) override;
             
             private:
                 std::string serverAddress_;
@@ -59,6 +75,9 @@ namespace fall_detection
 
                 // 使用 Paho MQTT 的现代 C++ 异步客户端，确保底层网络 I/O 
                 std::unique_ptr<mqtt::async_client> client_;
+
+                // 保存外部传入的回调函数
+                MessageCallback messageCallback_;
         };
     }
 }

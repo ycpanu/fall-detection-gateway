@@ -16,6 +16,9 @@ namespace fall_detection
         {
             // 实例化 Paho MQTT 异步客户端
             client_ = std::make_unique<mqtt::async_client>(serverAddress_, clientId_);
+
+            // 将当前类注册为 MQTT 客户端的回调处理对象
+            client_->set_callback(*this);
         }
 
         MqttClient::~MqttClient()
@@ -119,6 +122,55 @@ namespace fall_detection
                 LOG_ERROR("MQTT 消息发布异常：{}", exc.what());
                 return false;
             }
+        }
+
+        // 保存外部传入的 Lambda 表达式
+        void MqttClient::setMessageCallback(MessageCallback cb)
+        {
+            messageCallback_ = cb;
+        }
+
+        // 向云端发送订阅请求
+        bool MqttClient::subscribe(const std::string& topic, int qos)
+        {
+            if (!isConnected())
+            {
+                LOG_ERROR("订阅主题失败：MQTT 处于离线状态！");
+                return false;
+            }
+
+            try
+            {
+                client_->subscribe(topic, qos)->wait();
+                LOG_INFO("成功订阅主题：{} (QoS {})", topic, qos);
+                return true;
+            }
+            catch (const mqtt::exception& exc)
+            {
+                LOG_ERROR("MQTT 订阅主题异常：{}", exc.what());
+                return false;
+            }
+        }
+
+        // 底层收到消息时自动触发此函数
+        void MqttClient::message_arrived(mqtt::const_message_ptr msg)
+        {
+            std::string topic = msg->get_topic();
+            std::string payload = msg->to_string();
+
+            LOG_INFO("收到云端指令：主题 [{}]，内容 [{}]", topic, payload);
+
+            // 如果 main.cpp 里设置了回调函数，则把数据传过去
+            if (messageCallback_)
+            {
+                messageCallback_(topic, payload);
+            }
+        }
+
+        // 连接意外断开时触发此函数
+        void MqttClient::connection_lost(const std::string& cause)
+        {
+            LOG_WARN("MQTT 连接意外断开，原因：{}", cause);
         }
     }
 }
