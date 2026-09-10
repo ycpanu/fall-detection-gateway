@@ -1,141 +1,150 @@
 import json
-import logging
-import threading
+import time
 from contextlib import asynccontextmanager
-from typing import List
-
-from fastapi import FastAPI
-import paho.mqtt.client as mqtt
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import paho.mqtt.client as mqtt
 
-# 1. 全局配置与日志初始化
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("CloudBackend")
+# 引入 SQLAlchemy 相关库
+from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
+# ==========================================
+# 1. 数据库配置 (SQLite)
+# ==========================================
+# 数据库文件会生成在当前目录下的 cloud_alerts.db
+SQLALCHEMY_DATABASE_URL = "sqlite:///./cloud_alerts.db"
+
+# check_same_thread=False 是 SQLite 在 FastAPI 多线程下必须的参数
+engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# 定义数据库表结构
+class AlertRecord(Base):
+    __tablename__ = "alerts"
+    
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    device_id = Column(String, index=True)
+    timestamp = Column(Integer)
+    server_receive_time = Column(Integer)
+    trigger_x = Column(Integer)
+    trigger_y = Column(Integer)
+    status = Column(String, default="CRITICAL")
+
+# 自动在本地创建表（如果表不存在）
+Base.metadata.create_all(bind=engine)
+
+# 获取数据库 Session 的依赖函数
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# ==========================================
+# 2. 全局配置与 MQTT
+# ==========================================
 MQTT_BROKER = "broker.emqx.io"
 MQTT_PORT = 1883
-MQTT_TOPIC = "fall_detection_gateway/alerts"
+ALERT_TOPIC = "fall_detection/alerts"
+CLIENT_ID = "Cloud_Backend_FastAPI_001"
+mqtt_client = None
 
-# 模拟内存数据库，用于存储历史报警记录（实际项目应存入 MySQL / InfluxDB）
-alert_database = []
-alert_lock = threading.Lock()
+# ==========================================
+# 3. Pydantic 数据模型 (用于接口校验)
+# ==========================================
+class LiveCommand(BaseModel):
+    rtmp_url: str
 
-# 2. Pydantic 数据模型定义
-class FallData(BaseModel):
-    trigger_x: int
-    trigger_y: int
-    status: str
-
-class AlertEvent(BaseModel):
-    device_id: str
-    event_type: str
-    timestamp: int
-    data: FallData
-
-# 3. MQTT 客户端回调逻辑
-def on_connect(client, userdata, flags, reason_code, properties):
-    if reason_code.is_failure:
-        logger.error("连接 MQTT Broker 失败，返回码: %s", reason_code)
-    else:
-        logger.info("成功连接到 MQTT 云端 Broker: %s", MQTT_BROKER)
-        client.subscribe(MQTT_TOPIC)
-        logger.info("已订阅报警频道: %s", MQTT_TOPIC)
+# ==========================================
+# 4. MQTT 回调函数
+# ==========================================
+def on_connect(client, userdata, flags, rc):
+    print(f"[MQTT] 已连接到云端 Broker，状态码: {rc}")
+    client.subscribe(ALERT_TOPIC, qos=1)
 
 def on_message(client, userdata, msg):
+    payload = msg.payload.decode('utf-8')
+    print(f"\n[MQTT] 收到设备报警数据: {payload}")
     try:
-        # 解析网关发来的 JSON 数据包
-        payload_str = msg.payload.decode("utf-8")
-        payload_json = json.loads(payload_str)
-
-        # 用 Pydantic 模型校验数据结构
-        alert_event = AlertEvent(**payload_json)
-        logger.info("接收到边缘网关报警数据: %s", payload_json)
-
-        # 存入数据库 (此处以存入内存列表模拟)
-        with alert_lock:
-            alert_database.append(alert_event)
-
-        # 触发预警下发逻辑
-        trigger_notification_service(alert_event)
-
+        data = json.loads(payload)
+        
+        # 收到 MQTT 消息后，打开一个独立的数据库会话存入数据
+        db = SessionLocal()
+        new_alert = AlertRecord(
+            device_id=data.get("device_id", "unknown"),
+            timestamp=data.get("timestamp", 0),
+            server_receive_time=int(time.time() * 1000),
+            trigger_x=data.get("data", {}).get("trigger_x", 0),
+            trigger_y=data.get("data", {}).get("trigger_y", 0),
+            status=data.get("data", {}).get("status", "CRITICAL")
+        )
+        db.add(new_alert)
+        db.commit()
+        db.close()
+        print("[数据库] 报警数据已成功落盘！")
+        
     except Exception as e:
-        logger.error("解析 MQTT 消息时发生错误: %s", e)
+        print(f"[MQTT] 解析或存储报警数据失败: {e}")
 
-def trigger_notification_service(alert_event: AlertEvent):
-    """
-    模拟调用外部通知服务。
-    实际开发中，应在此处对接微信小程序推送或阿里云/腾讯云 SMS 短信 API。
-    """
-    logger.info("正在向家属微信小程序发送设备 [%s] 的摔倒预警推送...", alert_event.device_id)
-
-# 4. FastAPI 生命周期管理 (整合 MQTT)
-mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-
+# ==========================================
+# 5. FastAPI 生命周期
+# ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时：连接 MQTT Broker 并开启独立后台网络循环
+    global mqtt_client
+    mqtt_client = mqtt.Client(CLIENT_ID)
     mqtt_client.on_connect = on_connect
     mqtt_client.on_message = on_message
-
     try:
         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        mqtt_client.loop_start()  # 在后台线程中非阻塞运行 MQTT
+        mqtt_client.loop_start()
     except Exception as e:
-        logger.error("MQTT 初始化失败: %s", e)
-
-    yield  # 交出控制权，FastAPI 主程序运行
-
-    # 关闭时：安全断开 MQTT 连接
-    logger.info("正在关闭云端后端服务，断开 MQTT 连接...")
-    try:
+        print(f"[MQTT] 连接失败: {e}")
+    yield
+    if mqtt_client:
         mqtt_client.loop_stop()
         mqtt_client.disconnect()
-    except Exception as e:
-        logger.error("断开 MQTT 连接时发生错误: %s", e)
 
-app = FastAPI(title="Fall Detection Cloud Backend", lifespan=lifespan)
+app = FastAPI(title="摔倒检测云端管理系统", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# 5. RESTful API 接口 (供 Vue/React 后台或小程序调用)
-@app.get("/", tags=["Health Check"])
+# ==========================================
+# 6. RESTful API 路由接口
+# ==========================================
+@app.get("/")
 async def root():
-    return {"status": "ok", "message": "云端接收服务正在运行"}
+    return {"message": "摔倒检测云端服务运行正常", "status": "ok"}
 
-@app.get("/api/alerts", response_model=List[AlertEvent], tags=["Alerts"])
-async def get_history_alerts():
-    """
-    提供给后台管理端或家属小程序拉取历史摔倒报警记录的接口
-    """
-    with alert_lock:
-        return list(alert_database)
+@app.get("/api/alerts", summary="获取历史报警记录")
+async def get_alerts(limit: int = 50, db: Session = Depends(get_db)):
+    """从 SQLite 数据库中读取最新的报警记录"""
+    # 按接收时间倒序排列，取最新的 limit 条
+    alerts = db.query(AlertRecord).order_by(AlertRecord.server_receive_time.desc()).limit(limit).all()
+    return {
+        "code": 200,
+        "msg": "success",
+        "total": len(alerts),
+        "data": alerts
+    }
 
+@app.post("/api/device/{device_id}/live/start")
+async def start_device_live(device_id: str, cmd_data: LiveCommand):
+    if not mqtt_client: raise HTTPException(status_code=500, detail="MQTT 未初始化")
+    topic = f"fall_detection/commands/{device_id}"
+    mqtt_client.publish(topic, json.dumps({"cmd": "start_live", "rtmp_url": cmd_data.rtmp_url}), qos=1)
+    return {"code": 200, "msg": f"已向设备 {device_id} 下发启动推流指令"}
 
-'''
-启动步骤
+@app.post("/api/device/{device_id}/live/stop")
+async def stop_device_live(device_id: str):
+    if not mqtt_client: raise HTTPException(status_code=500, detail="MQTT 未初始化")
+    topic = f"fall_detection/commands/{device_id}"
+    mqtt_client.publish(topic, json.dumps({"cmd": "stop_live"}), qos=1)
+    return {"code": 200, "msg": f"已向设备 {device_id} 下发停止推流指令"}
 
-1. 安装依赖（fastapi 会自动带上 pydantic；main.py 用了 CallbackAPIVersion.VERSION2，需要 paho-mqtt ≥ 2.0）
-
-pip install fastapi "uvicorn[standard]" paho-mqtt
-
-2. 启动服务（在 apps/ 目录下执行）
-
-cd apps
-uvicorn main:app --host 0.0.0.0 --port 8000
-
-开发时想改代码自动重载，加 --reload：
-
-uvicorn main:app --reload
-
-3. 验证
-
-┌──────────────────────────────────┬────────────────────────────────────┐
-│               地址               │                说明                │
-├──────────────────────────────────┼────────────────────────────────────┤
-│ http://localhost:8000/           │ 健康检查，返回 {"status":"ok",...} │
-├──────────────────────────────────┼────────────────────────────────────┤
-│ http://localhost:8000/api/alerts │ 拉取历史报警记录                   │
-├──────────────────────────────────┼────────────────────────────────────┤
-│ http://localhost:8000/docs       │ Swagger 接口文档（自动生成）       │
-└──────────────────────────────────┴────────────────────────────────────┘
-
-启动后日志会显示「成功连接到 MQTT 云端 Broker」并订阅报警频道，此时网关发的摔倒报警就能被接收、存入内存列表。
-'''
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

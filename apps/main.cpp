@@ -155,6 +155,9 @@ int main(int argc, char* argv[])
         streamer = std::make_unique<vision::CameraStreamer>(config.getCameraDeviceId(), frameQueue, videoCacher);
     }
 
+    // 将推流器绑定到采集线程，实现解耦
+    streamer->setLiveStreamer(&liveStreamer);
+
     if (!streamer->start()) 
     {
         LOG_ERROR("致命错误：视频流采集模块启动失败！");
@@ -210,11 +213,6 @@ int main(int argc, char* argv[])
         cv::Mat frame;
         if (frameQueue.wait_for_and_pop(frame, std::chrono::milliseconds(500))) 
         {
-            // 如果正在推流，则将最新画面压入直播队列
-            if (liveStreamer.isStreaming())
-            {
-                liveStreamer.pushFrame(frame);
-            }
             std::vector<vision::DetectResult> aiResults;
             if (inferencer.detect(frame, aiResults)) 
             {

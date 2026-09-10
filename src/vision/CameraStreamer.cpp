@@ -135,6 +135,12 @@ namespace fall_detection
                     
                 }
 
+                // 如果绑定了推流器，且正在直播，直接在这里以 30FPS 极速喂图
+                if (liveStreamer_ != nullptr && liveStreamer_->isStreaming())
+                {
+                    liveStreamer_->pushFrame(frame);
+                }
+
                 // 将最新画面压入队列
                 frameQueue_.push(frame);
                 videoCacher_.pushFrame(frame);

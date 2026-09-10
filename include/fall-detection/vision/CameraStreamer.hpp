@@ -5,6 +5,7 @@
 #include <atomic>
 #include "fall-detection/concurrency/ThreadSafeQueue.hpp"
 #include "fall-detection/vision/VideoCacher.hpp"
+#include "fall-detection/network/LiveStreamer.hpp"
 #include <opencv2/videoio.hpp>
 
 namespace fall_detection
@@ -41,6 +42,12 @@ namespace fall_detection
             // @brief 停止视频采集线程并释放摄像头
             void stop();
 
+            // 绑定推流器
+            void setLiveStreamer(network::LiveStreamer* streamer)
+            {
+                liveStreamer_ = streamer;
+            }
+
         private:
             // @brief 内部工作线程的核心死循环函数
             void captureLoop();
@@ -54,6 +61,7 @@ namespace fall_detection
             concurrency::ThreadSafeQueue<cv::Mat>& frameQueue_;  // 引用外部图像队列
             std::thread workerThread_;              // 独立工作线程
             std::atomic<bool> isRunning_{false};           // 线程运行状态标志位
+            network::LiveStreamer* liveStreamer_ = nullptr; // 推流器指针
         };
     }
 }
