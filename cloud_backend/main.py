@@ -96,7 +96,7 @@ def on_message(client, userdata, msg):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global mqtt_client
-    mqtt_client = mqtt.Client(CLIENT_ID)
+    mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, CLIENT_ID)
     mqtt_client.on_connect = on_connect
     mqtt_client.on_message = on_message
     try:
