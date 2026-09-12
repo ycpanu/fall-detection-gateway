@@ -118,8 +118,10 @@ int main(int argc, char* argv[])
     }
     else
     {
-        // 连接成功后，订阅指令主题 (主题名带上设备ID，防止多设备串线)
-        std::string cmdTopic = "fall_detection/commands/" + config.getMqttClientId();
+        std::string cmdTopic =
+            "fall_detection/commands/" +
+            config.getMqttClientId();
+
         mqttClient.subscribe(cmdTopic);
     }
 
@@ -208,21 +210,116 @@ int main(int argc, char* argv[])
 
     // 7. AI 主干视觉流水线 (生产者)
     LOG_INFO("AI 视觉主干流水线已就绪，进入实时监测模式...");
-    while (g_running) 
+    // ==================== 性能统计 ====================
+    constexpr int PERF_WARMUP_FRAMES = 20;
+    constexpr double PERF_REPORT_INTERVAL_SEC = 5.0;
+
+    int warmupFrames = 0;
+
+    int perfFrames = 0;
+    double perfDetectTotalMs = 0.0;
+    double perfDetectMinMs = 1e9;
+    double perfDetectMaxMs = 0.0;
+
+    auto perfWindowStart = std::chrono::steady_clock::now();
+    // ==================================================
+    while (g_running)
     {
         cv::Mat frame;
-        if (frameQueue.wait_for_and_pop(frame, std::chrono::milliseconds(500))) 
+
+        if (!frameQueue.wait_for_and_pop(
+                frame, std::chrono::milliseconds(500)))
         {
-            std::vector<vision::DetectResult> aiResults;
-            if (inferencer.detect(frame, aiResults)) 
+            continue;
+        }
+
+        // ==================== detect 耗时统计 ====================
+        auto detectStart = std::chrono::steady_clock::now();
+
+        std::vector<vision::DetectResult> aiResults;
+        bool detectOk = inferencer.detect(frame, aiResults);
+
+        auto detectEnd = std::chrono::steady_clock::now();
+
+        double detectMs =
+            std::chrono::duration<double, std::milli>(
+                detectEnd - detectStart).count();
+        // =========================================================
+
+        if (detectOk)
+        {
+            // 前 20 帧作为预热帧，不计入性能统计
+            if (warmupFrames < PERF_WARMUP_FRAMES)
             {
-                vision::AlertEvent event;
-                if (ruleEngine.processFrame(aiResults, event)) 
+                ++warmupFrames;
+
+                if (warmupFrames == PERF_WARMUP_FRAMES)
                 {
-                    alertQueue.push(event);
+                    perfWindowStart = std::chrono::steady_clock::now();
+
+                    LOG_INFO("[PERF] 预热完成，开始统计 AI 实际性能...");
                 }
             }
+            else
+            {
+                ++perfFrames;
+
+                perfDetectTotalMs += detectMs;
+
+                if (detectMs < perfDetectMinMs)
+                {
+                    perfDetectMinMs = detectMs;
+                }
+
+                if (detectMs > perfDetectMaxMs)
+                {
+                    perfDetectMaxMs = detectMs;
+                }
+            }
+
+            // ==================== 原有摔倒判定逻辑 ====================
+            vision::AlertEvent event;
+
+            if (ruleEngine.processFrame(aiResults, event))
+            {
+                alertQueue.push(event);
+            }
+            // =========================================================
         }
+
+        // ==================== 每 5 秒输出一次性能 ====================
+        if (warmupFrames >= PERF_WARMUP_FRAMES && perfFrames > 0)
+        {
+            auto now = std::chrono::steady_clock::now();
+
+            double elapsedSec =
+                std::chrono::duration<double>(
+                    now - perfWindowStart).count();
+
+            if (elapsedSec >= PERF_REPORT_INTERVAL_SEC)
+            {
+                double fps = perfFrames / elapsedSec;
+                double avgDetectMs =
+                    perfDetectTotalMs / perfFrames;
+
+                LOG_INFO(
+                    "[PERF] AI pipeline: FPS={:.2f}, detect avg={:.2f} ms, min={:.2f} ms, max={:.2f} ms, frames={}",
+                    fps,
+                    avgDetectMs,
+                    perfDetectMinMs,
+                    perfDetectMaxMs,
+                    perfFrames
+                );
+
+                // 重置当前统计窗口
+                perfWindowStart = now;
+                perfFrames = 0;
+                perfDetectTotalMs = 0.0;
+                perfDetectMinMs = 1e9;
+                perfDetectMaxMs = 0.0;
+            }
+        }
+        // =========================================================
     }
 
     // 8. 捕获信号并执行优雅退出
@@ -233,6 +330,7 @@ int main(int argc, char* argv[])
     {
         alertThread.join();
     }
+    
     mqttClient.disconnect();
     
     LOG_INFO("系统资源释放完毕，安全退出！");

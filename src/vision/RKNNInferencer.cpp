@@ -7,6 +7,9 @@
 #include "fall-detection/vision/RKNNInferencer.hpp"
 #include "fall-detection/utils/SysLogger.hpp"
 
+#include <chrono>
+#include <limits>
+
 namespace fall_detection
 {
     namespace vision
@@ -134,6 +137,16 @@ namespace fall_detection
 
         bool RKNNInferencer::detect(const cv::Mat& frame, std::vector<DetectResult>& results)
         {
+            static int warmupCount = 0;
+            static int measuredCount = 0;
+
+            static double totalRknnMs = 0.0;
+            static double minRknnMs = std::numeric_limits<double>::max();
+            static double maxRknnMs = 0.0;
+
+            constexpr int WARMUP_FRAMES = 20;
+            constexpr int REPORT_FRAMES = 100;
+
             if (!isInitialized_)
             {
                 LOG_ERROR("调用 detect 前必须先成功执行 init()！");
@@ -182,11 +195,50 @@ namespace fall_detection
                 return false;
             }
 
+            auto rknnStart = std::chrono::steady_clock::now();
+
             ret = rknn_run(ctx_, NULL);
+
+            auto rknnEnd = std::chrono::steady_clock::now();
+
             if (ret < 0)
             {
                 LOG_ERROR("rknn_run 推理失败！错误码：{}", ret);
                 return false;
+            }
+
+            double rknnMs =
+                std::chrono::duration<double, std::milli>(rknnEnd - rknnStart).count();
+
+            if (warmupCount < WARMUP_FRAMES)
+            {
+                ++warmupCount;
+            }
+            else
+            {
+                ++measuredCount;
+
+                totalRknnMs += rknnMs;
+                minRknnMs = std::min(minRknnMs, rknnMs);
+                maxRknnMs = std::max(maxRknnMs, rknnMs);
+
+                if (measuredCount >= REPORT_FRAMES)
+                {
+                    double avgRknnMs = totalRknnMs / measuredCount;
+
+                    LOG_INFO(
+                        "[PERF] RKNN rknn_run: avg={:.2f} ms, min={:.2f} ms, max={:.2f} ms, samples={}",
+                        avgRknnMs,
+                        minRknnMs,
+                        maxRknnMs,
+                        measuredCount
+                    );
+
+                    measuredCount = 0;
+                    totalRknnMs = 0.0;
+                    minRknnMs = std::numeric_limits<double>::max();
+                    maxRknnMs = 0.0;
+                }
             }
 
             // 修复 VLA 变长数组问题，使用标准的 std::vector 容器

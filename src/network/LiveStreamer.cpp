@@ -56,7 +56,7 @@ namespace fall_detection
             // 构建 FFmpeg 命令行
             // -f rawideo: 接收原始像素数据
             // -c:v h264_rkmpp: 使用 RKNN 硬件加速的 H.264 编码器
-            std::string ffmpegCmd = "ffmpeg -y "
+            std::string ffmpegCmd = "ffmpeg -y -nostats "
                 "-f rawvideo -framerate 30 -vcodec rawvideo -pix_fmt bgr24 "
                 "-s " + std::to_string(width_) + "x" + std::to_string(height_) + " "
                 "-use_wallclock_as_timestamps 1 -i - "

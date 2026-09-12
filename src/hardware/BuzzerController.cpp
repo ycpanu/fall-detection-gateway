@@ -27,7 +27,7 @@ namespace fall_detection
             if (isInitialized_)
             {
                 writeSysfs("/sys/class/gpio/gpio" + std::to_string(gpioPin_) + "/value", "0");
-                writeSysfs("/sys/class/gpio/unexpoert", std::to_string(gpioPin_));
+                writeSysfs("/sys/class/gpio/unexport", std::to_string(gpioPin_));
                 LOG_INFO("蜂鸣器资源已安全释放。");
             }
         }
@@ -57,14 +57,11 @@ namespace fall_detection
                 LOG_ERROR("无法设置 GPIO 引脚 {} 为输出模式 : {}", gpioPin_, std::strerror(errno));
                 return false;
             }
-            LOG_INFO("蜂鸣器容灾模块初始化成功，引脚: {}", gpioPin_);
+            
             isInitialized_ = true;
             isRunning_ = true;
-            return true;
-
             // 启动常驻工作线程，彻底消灭 detach 游离线程
             workerThread_ = std::thread(&BuzzerController::alarmWorkerLoop, this);
-            
             LOG_INFO("蜂鸣器容灾模块初始化成功，引脚: {}", gpioPin_);
             return true;
         }
