@@ -37,21 +37,21 @@ namespace fall_detection
 			// 1. 压入数据（生产者调用，如视频采集线程不断把新画面塞进来）
 			void push(T new_value)
 			{
-				// lock_guard 是 C++ 的“智能锁”，进该作用域自动把门锁死，出作用域自动开锁。
-				// 下面代码抛出异常，锁会自动解开，绝不发生死锁（PAII 机制）
-				std::lock_guard<std::mutex> lock(mutex_);
-
-				// 队满自动丢弃最旧的数据
-				if (queue_.size() >= max_size_)
 				{
-					queue_.pop();
-				}
+					// lock_guard 是 C++ 的“智能锁”，利用局部代码块 {} 严格控制锁的生命周期
+					std::lock_guard<std::mutex> lock(mutex_);
 
-				// std::move()：把内存的所有权转移过去，而不是复制一遍
-				// 传高清图片时极省内存，速度极快
-				queue_.push(std::move(new_value));
+					// 队满自动丢弃最旧的数据
+					if (queue_.size() >= max_size_)
+					{
+						queue_.pop();
+					}
 
-				// 唤醒一个正在休眠等待数据的消费者线程
+					// std::move()：把内存的所有权转移过去，而不是复制一遍
+					queue_.push(std::move(new_value));
+				} // 离开此大括号，lock 自动析构并完全释放互斥锁
+
+				// 此时锁已绝对释放，再唤醒正在休眠等待数据的消费者线程，彻底杜绝“悲观唤醒”损耗
 				cond_var_.notify_one();
 			}
 
