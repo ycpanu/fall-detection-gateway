@@ -48,7 +48,7 @@ namespace fall_detection
 
                 // 阻塞等待首次连接结果
                 mqtt::token_ptr conntok = client_->connect(connOpts);
-                conntok->wait_for(std::chrono::seconds(5));
+                conntok->wait();
 
                 LOG_INFO("MQTT 服务器连接成功！");
                 return true;
