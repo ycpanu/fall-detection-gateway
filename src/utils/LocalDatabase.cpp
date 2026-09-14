@@ -48,6 +48,7 @@ namespace fall_detection
                 "timestamp INTEGER NOT NULL, "
                 "trigger_x INTEGER NOT NULL, "
                 "trigger_y INTEGER NOT NULL, "
+                "video_path TEXT, " 
                 "status TEXT NOT NULL);";
 
             if (!executeSQL(createTableSQL))
@@ -82,10 +83,11 @@ namespace fall_detection
         {
             if (!isInitialized_) return false;
 
-            std::string insertSQL = "INSERT INTO alerts (timestamp, trigger_x, trigger_y, status) VALUES (" +
+            std::string insertSQL = "INSERT INTO alerts (timestamp, trigger_x, trigger_y, video_path, status) VALUES (" +
                                 std::to_string(event.timestamp) + ", " +
                                 std::to_string(event.triggerBoxX) + ", " +
-                                std::to_string(event.triggerBoxY) + ", 'pending');";
+                                std::to_string(event.triggerBoxY) + ", '" +
+                                event.videoPath + "', 'pending');";
             
             // 极速内存入队，绝不在此处进行磁盘 I/O 阻塞
             {
@@ -103,7 +105,7 @@ namespace fall_detection
             std::vector<DBAlertEvent> pendingAlerts;
             if (!isInitialized_) return pendingAlerts;
 
-            std::string querySQL = "SELECT id, timestamp, trigger_x, trigger_y FROM alerts WHERE status = 'pending';";
+            std::string querySQL = "SELECT id, timestamp, trigger_x, trigger_y, video_path FROM alerts WHERE status = 'pending';";
             sqlite3_stmt* stmt;
 
             if (sqlite3_prepare_v2(db_, querySQL.c_str(), -1, &stmt, nullptr) == SQLITE_OK)
@@ -115,6 +117,10 @@ namespace fall_detection
                     event.timestamp = sqlite3_column_int64(stmt, 1);
                     event.triggerBoxX = sqlite3_column_int(stmt, 2);
                     event.triggerBoxY = sqlite3_column_int(stmt, 3);
+
+                    // 安全读取 text 字段并转换为 std::string
+                    const unsigned char* vPath = sqlite3_column_text(stmt, 4);
+                    event.videoPath = vPath ? reinterpret_cast<const char*>(vPath) : "";
                     event.isFall = true;
                     pendingAlerts.push_back(event);
                 }
