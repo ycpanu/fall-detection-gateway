@@ -1,7 +1,9 @@
 #include <opencv2/videoio.hpp>
+#include <cstdlib>
 
 #include "fall-detection/vision/VideoCacher.hpp"
 #include "fall-detection/utils/SysLogger.hpp"
+#include "fall-detection/utils/ConfigManager.hpp"
 
 namespace fall_detection
 {
@@ -120,6 +122,22 @@ namespace fall_detection
 
                 writer.release();
                 LOG_WARN("现场短视频已成功异步落盘：{}", task.outputPath);
+
+                // 利用 curl 后台上传视频到云端
+                std::string serverUrl = utils::ConfigManager::getInstance().getString("network.api_base_url", "http://10.48.212.22:8000");
+                // 构建上传命令：curl -s -X POST -F "file=@videos/fall_xxx.mp4" http://ip:8000/api/upload/video
+                std::string uploadCmd = "curl -s -X POST -F \"file=@" + task.outputPath + "\" " + serverUrl + "/api/upload/video";
+                
+                LOG_INFO("正在后台上传短视频到云端: {}", task.outputPath);
+                int ret = std::system(uploadCmd.c_str());
+                if (ret == 0)
+                {
+                    LOG_INFO("现场短视频上传云端成功！");
+                }
+                else
+                {
+                    LOG_ERROR("短视频上传失败！可能网络断开，视频已保留在本地。");
+                }
             }
         }
     }

@@ -32,7 +32,8 @@
         "mqtt_client_id": "OrangePi_Gateway_001",
         "alert_topic": "fall_detection/alerts",
         "keep_alive_seconds": 20,
-        "alert_queue_size": 10
+        "alert_queue_size": 10,
+        "api_base_url": "http://10.48.212.22:8000"
     },
 
     "hardware": {

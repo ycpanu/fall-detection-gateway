@@ -101,6 +101,7 @@ namespace fall_detection
                 payloadJson["timestamp"] = event.timestamp;
                 payloadJson["data"]["trigger_x"] = event.triggerBoxX;
                 payloadJson["data"]["trigger_y"] = event.triggerBoxY;
+                payloadJson["data"]["video_name"] = "fall_" + std::to_string(event.timestamp) + ".mp4";
                 payloadJson["data"]["status"] = "CRITICAL";
 
                 // 2. 序列化字符串

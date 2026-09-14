@@ -1,18 +1,18 @@
 import json
 import time
+import os
+import shutil
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, File, UploadFile # 1. 引入 File 和 UploadFile
+from fastapi.staticfiles import StaticFiles # 2. 引入静态文件服务
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import paho.mqtt.client as mqtt
 
-# 引入 SQLAlchemy 相关库
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
-# ==========================================
 # 1. 数据库配置 (SQLite)
-# ==========================================
 # 数据库文件会生成在当前目录下的 cloud_alerts.db
 SQLALCHEMY_DATABASE_URL = "sqlite:///./cloud_alerts.db"
 
@@ -24,7 +24,6 @@ Base = declarative_base()
 # 定义数据库表结构
 class AlertRecord(Base):
     __tablename__ = "alerts"
-    
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     device_id = Column(String, index=True)
     timestamp = Column(Integer)
@@ -32,6 +31,7 @@ class AlertRecord(Base):
     trigger_x = Column(Integer)
     trigger_y = Column(Integer)
     status = Column(String, default="CRITICAL")
+    video_name = Column(String, default="")
 
 # 自动在本地创建表（如果表不存在）
 Base.metadata.create_all(bind=engine)
@@ -44,24 +44,18 @@ def get_db():
     finally:
         db.close()
 
-# ==========================================
 # 2. 全局配置与 MQTT
-# ==========================================
-MQTT_BROKER = "broker.emqx.io"
+MQTT_BROKER = "10.48.212.22"
 MQTT_PORT = 1883
 ALERT_TOPIC = "fall_detection/alerts"
 CLIENT_ID = "Cloud_Backend_FastAPI_001"
 mqtt_client = None
 
-# ==========================================
 # 3. Pydantic 数据模型 (用于接口校验)
-# ==========================================
 class LiveCommand(BaseModel):
     rtmp_url: str
 
-# ==========================================
 # 4. MQTT 回调函数
-# ==========================================
 def on_connect(client, userdata, flags, rc):
     print(f"[MQTT] 已连接到云端 Broker，状态码: {rc}")
     client.subscribe(ALERT_TOPIC, qos=1)
@@ -80,7 +74,8 @@ def on_message(client, userdata, msg):
             server_receive_time=int(time.time() * 1000),
             trigger_x=data.get("data", {}).get("trigger_x", 0),
             trigger_y=data.get("data", {}).get("trigger_y", 0),
-            status=data.get("data", {}).get("status", "CRITICAL")
+            status=data.get("data", {}).get("status", "CRITICAL"),
+            video_name=data.get("data", {}).get("video_name", "")
         )
         db.add(new_alert)
         db.commit()
@@ -90,9 +85,7 @@ def on_message(client, userdata, msg):
     except Exception as e:
         print(f"[MQTT] 解析或存储报警数据失败: {e}")
 
-# ==========================================
 # 5. FastAPI 生命周期
-# ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global mqtt_client
@@ -112,9 +105,19 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="摔倒检测云端管理系统", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# ==========================================
+# 挂载静态目录，允许小程序通过 http://IP:8000/videos/xxx.mp4 播放视频
+os.makedirs("videos", exist_ok=True)
+app.mount("/videos", StaticFiles(directory="videos"), name="videos")
+
 # 6. RESTful API 路由接口
-# ==========================================
+# 接收边缘网关上传的视频文件
+@app.post("/api/upload/video", summary="网关上传摔倒短视频")
+async def upload_video(file: UploadFile = File(...)):
+    file_location = f"videos/{file.filename}"
+    with open(file_location, "wb+") as file_object:
+        shutil.copyfileobj(file.file, file_object)
+    return {"code": 200, "msg": "视频上传成功", "url": f"/videos/{file.filename}"}
+
 @app.get("/")
 async def root():
     return {"message": "摔倒检测云端服务运行正常", "status": "ok"}
