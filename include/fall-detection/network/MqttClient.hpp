@@ -49,6 +49,9 @@ namespace fall_detection
                  */
                 bool publishAlert(const std::string& topic, const vision::AlertEvent& event);
 
+                // 发布硬件状态（心跳）
+                bool publishStatus(const std::string& topic, int npuUsage);
+
                 /**
                  * @brief 查询与 MQTT 服务器的连接状态
                  * @return 是否已连接
@@ -60,6 +63,7 @@ namespace fall_detection
 
                 // 订阅指定主题
                 bool subscribe(const std::string& topic, int qos = 1);
+
 
             protected:
                 // 重写 Paho MQTT 的底层消息到达回调
