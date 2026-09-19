@@ -29,7 +29,8 @@
 
         "suspect_confirm_ms": 1000,
         "static_lie_confirm_ms": 5000,
-        "fall_event_window_ms": 1500
+        "fall_event_window_ms": 1500,
+        "safe_zone_overlap_threshold": 0.5
     },
 
     "network": {

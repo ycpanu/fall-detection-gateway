@@ -10,8 +10,7 @@ namespace fall_detection
 {
     namespace vision
     {
-        FallRuleEngine::FallRuleEngine(const FallRuleConfig& config)
-            : config_(config)
+        FallRuleEngine::FallRuleEngine(const FallRuleConfig& config, const SafeZoneManager* safeZoneManager) : config_(config), safeZoneManager_(safeZoneManager)
         {
             auto now = std::chrono::steady_clock::now();
 
@@ -57,9 +56,7 @@ namespace fall_detection
         }
 
 
-        bool FallRuleEngine::processFrame(
-            const std::vector<DetectResult>& aiResults,
-            AlertEvent& outEvent)
+        bool FallRuleEngine::processFrame(const std::vector<DetectResult>& aiResults, int frameWidth, int frameHeight, AlertEvent& outEvent)
         {
             // 每次进入函数先清空输出事件。
             // 只有真正确认跌倒时才设置为 true。
@@ -167,6 +164,75 @@ namespace fall_detection
             float hipX = 0.0f;
             float hipY = 0.0f;
             int hipCount = 0;
+
+            // 安全区域判断
+            bool inSafeLieZone = false;
+
+            float safeZoneOverlapRatio = 0.0f;
+
+
+            if (safeZoneManager_ != nullptr &&
+                frameWidth > 0 &&
+                frameHeight > 0)
+            {
+                // -----------------------------------------------------
+                // 1. 判断髋部中点是否位于安全区域
+                // -----------------------------------------------------
+
+                const float normalizedHipX =
+                    std::clamp(
+                        hipX / static_cast<float>(frameWidth),
+                        0.0f,
+                        1.0f
+                    );
+
+                const float normalizedHipY =
+                    std::clamp(
+                        hipY / static_cast<float>(frameHeight),
+                        0.0f,
+                        1.0f
+                    );
+
+
+                const bool hipInsideSafeZone =
+                    safeZoneManager_->isPointInSafeZone(
+                        normalizedHipX,
+                        normalizedHipY
+                    );
+
+
+                // -----------------------------------------------------
+                // 2. 计算人体框与安全区域的重叠比例
+                // -----------------------------------------------------
+
+                safeZoneOverlapRatio =
+                    safeZoneManager_->calculateBoxOverlapRatio(
+                        target->x,
+                        target->y,
+                        target->width,
+                        target->height,
+                        frameWidth,
+                        frameHeight
+                    );
+
+
+                // -----------------------------------------------------
+                // 3. 两个条件同时满足
+                // -----------------------------------------------------
+
+                inSafeLieZone =
+                    hipInsideSafeZone &&
+                    safeZoneOverlapRatio >=
+                        config_.safeZoneOverlapThreshold;
+
+
+                LOG_TRACE(
+                    "[SafeZone] hipInside={}, overlap={:.2f}, safe={}",
+                    hipInsideSafeZone,
+                    safeZoneOverlapRatio,
+                    inSafeLieZone
+                );
+            }
 
             if (leftHipValid)
             {
@@ -350,7 +416,7 @@ namespace fall_detection
             // =========================================================
             // 12. 静态躺卧计时器
             // =========================================================
-            if (isLying)
+            if (isLying && !inSafeLieZone)
             {
                 if (!lieTimerActive_)
                 {
@@ -409,7 +475,7 @@ namespace fall_detection
                      * 下一阶段加入安全区域以后，
                      * 床和沙发上的正常躺卧将在这里被过滤。
                      */
-                    else if (isLying && lieTimerActive_)
+                    else if (isLying && lieTimerActive_ && !inSafeLieZone)
                     {
                         const auto lieDuration =
                             std::chrono::duration_cast<

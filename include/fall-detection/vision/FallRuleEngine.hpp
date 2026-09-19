@@ -3,6 +3,7 @@
 #include <vector>
 #include <chrono>
 #include "fall-detection/vision/RKNNInferencer.hpp"
+#include "fall-detection/vision/SafeZoneManager.hpp"
 
 namespace fall_detection
 {
@@ -48,6 +49,9 @@ namespace fall_detection
 
             // 快速下坠事件在多长时间内仍然有效
             int fallEventWindowMs = 1500;
+
+            // 人体框与安全区域最小重叠比例
+            float safeZoneOverlapThreshold = 0.5f;
         };
 
         /**
@@ -73,7 +77,7 @@ namespace fall_detection
         class FallRuleEngine
         {
             public:
-                explicit FallRuleEngine(const FallRuleConfig& config = FallRuleConfig());
+                explicit FallRuleEngine(const FallRuleConfig& config = FallRuleConfig(), const SafeZoneManager* safeZoneManager = nullptr);
                 ~FallRuleEngine() = default;
 
                 /**
@@ -82,7 +86,7 @@ namespace fall_detection
                  * @param outEvent 如果判定摔倒，将报警信息写入该结构体
                  * @return true 代表认为异常摔倒，false 代表正常或过滤
                  */
-                bool processFrame(const std::vector<DetectResult>& aiResults, AlertEvent& outEvent);
+                bool processFrame(const std::vector<DetectResult>& aiResults, int frameWidth, int frameHeight, AlertEvent& outEvent);
 
             private:
                 /**
@@ -120,6 +124,7 @@ namespace fall_detection
                 // 用于运动特征归一化
                 float previousBodyHeight_ = 0.0f;
 
+
                 // 上一帧处理时间
                 std::chrono::steady_clock::time_point lastFrameTime_;
 
@@ -137,6 +142,9 @@ namespace fall_detection
 
                 // 最近是否发生过快速下降
                 bool fastDropDetected_ = false;
+
+                // 安全区域管理器
+                const SafeZoneManager* safeZoneManager_ = nullptr;
         };
     }
 }

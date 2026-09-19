@@ -9,6 +9,7 @@
 #include <fstream>
 #include <string>
 #include <opencv2/opencv.hpp>
+#include <nlohmann/json.hpp>
 
 #include "fall-detection/utils/ConfigManager.hpp"
 #include "fall-detection/utils/SysLogger.hpp"
@@ -21,8 +22,9 @@
 #include "fall-detection/hardware/BuzzerController.hpp"
 #include "fall-detection/utils/LocalDatabase.hpp"
 #include "fall-detection/utils/SysLogger.hpp"
-#include <nlohmann/json.hpp>
 #include "fall-detection/network/LiveStreamer.hpp"
+#include "fall-detection/vision/SafeZoneManager.hpp"
+
 // #include <syslog.h>
 
 using namespace fall_detection;
@@ -135,6 +137,17 @@ int main(int argc, char* argv[])
         return -1;
     }
 
+    // 加载场景安全区域
+    vision::SafeZoneManager safeZoneManager;
+    if (!safeZoneManager.load("configs/scene_config.json"))
+    {
+        LOG_WARN("安全区域配置加载失败，系统暂时不启用安全躺卧区域");
+    }
+    else
+    {
+        LOG_INFO("安全躺卧区域加载完成，共 {} 个区域", safeZoneManager.getZoneCount());
+    }
+
     vision::FallRuleConfig ruleConfig;
 
     // 关键点置信度
@@ -165,7 +178,9 @@ int main(int argc, char* argv[])
     ruleConfig.fallEventWindowMs =
         config.getFallEventWindowMs();
 
-    vision::FallRuleEngine ruleEngine(ruleConfig);
+    ruleConfig.safeZoneOverlapThreshold = config.getSafeZoneOverlapThreshold();
+
+    vision::FallRuleEngine ruleEngine(ruleConfig, &safeZoneManager);
 
     // 4. 初始化流水线通信基础设施
     concurrency::ThreadSafeQueue<cv::Mat> frameQueue(config.getFrameQueueSize());
@@ -350,7 +365,7 @@ int main(int argc, char* argv[])
             // ==================== 原有摔倒判定逻辑 ====================
             vision::AlertEvent event;
 
-            if (ruleEngine.processFrame(aiResults, event))
+            if (ruleEngine.processFrame(aiResults, frame.cols, frame.rows, event))
             {
                 alertQueue.push(event);
             }

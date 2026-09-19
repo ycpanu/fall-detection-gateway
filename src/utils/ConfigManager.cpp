@@ -169,6 +169,16 @@ namespace fall_detection
             );
         }
 
+        float ConfigManager::getSafeZoneOverlapThreshold() const
+        {
+            return static_cast<float>(
+                getDouble(
+                    "rule_engine.safe_zone_overlap_threshold",
+                    0.5
+                )
+            );
+        }
+
         // —— 网络 ——
         std::string ConfigManager::getMqttBroker() const       { return getString("network.mqtt_broker", "tcp://broker.emqx.io:1883"); }
         std::string ConfigManager::getMqttClientId() const     { return getString("network.mqtt_client_id", "OrangePi_Gateway_001"); }
