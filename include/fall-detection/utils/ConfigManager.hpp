@@ -53,10 +53,12 @@ namespace fall_detection
                 // —— 规则引擎 ——
                 float getKptConfThreshold() const;
                 float getFallAngleThreshold() const;
-                float getFallVelocityThreshold() const;
-                int getConfirmFramesThreshold() const;
-                int getStaticLieThreshold() const;
-                int getFallEventWindow() const;
+                float getRecoveryAngleThreshold() const;
+                float getNormalizedVelocityThreshold() const;
+                float getNormalizedCenterVelocityThreshold() const;
+                int getSuspectConfirmMs() const;
+                int getStaticLieConfirmMs() const;
+                int getFallEventWindowMs() const;
 
                 // —— 网络 ——
                 std::string getMqttBroker() const;

@@ -20,15 +20,20 @@
 
     "rule_engine": {
         "kpt_conf_threshold": 0.3,
+
         "fall_angle_threshold": 60.0,
-        "fall_velocity_threshold": 400.0,
-        "confirm_frames_threshold": 5,
-        "static_lie_threshold": 30,
-        "fall_event_window": 15
+        "recovery_angle_threshold": 35.0,
+
+        "normalized_velocity_threshold": 0.6,
+        "normalized_center_velocity_threshold": 0.5,
+
+        "suspect_confirm_ms": 1000,
+        "static_lie_confirm_ms": 5000,
+        "fall_event_window_ms": 1500
     },
 
     "network": {
-        "mqtt_broker": "tcp://broker.emqx.io:1883",
+        "mqtt_broker": "tcp://10.48.212.22:1883",
         "mqtt_client_id": "OrangePi_Gateway_001",
         "alert_topic": "fall_detection/alerts",
         "keep_alive_seconds": 20,

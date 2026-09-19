@@ -107,12 +107,67 @@ namespace fall_detection
         float ConfigManager::getNmsThreshold() const        { return static_cast<float>(getDouble("model.nms_threshold", 0.45)); }
 
         // —— 规则引擎 ——
-        float ConfigManager::getKptConfThreshold() const       { return static_cast<float>(getDouble("rule_engine.kpt_conf_threshold", 0.3)); }
-        float ConfigManager::getFallAngleThreshold() const     { return static_cast<float>(getDouble("rule_engine.fall_angle_threshold", 60.0)); }
-        float ConfigManager::getFallVelocityThreshold() const  { return static_cast<float>(getDouble("rule_engine.fall_velocity_threshold", 400.0)); }
-        int ConfigManager::getConfirmFramesThreshold() const { return getInt("rule_engine.confirm_frames_threshold", 5); }
-        int ConfigManager::getStaticLieThreshold() const     { return getInt("rule_engine.static_lie_threshold", 30); }
-        int ConfigManager::getFallEventWindow() const        { return getInt("rule_engine.fall_event_window", 15); }
+        float ConfigManager::getKptConfThreshold() const
+        {
+            return static_cast<float>(
+                getDouble("rule_engine.kpt_conf_threshold", 0.3)
+            );
+        }
+
+        float ConfigManager::getFallAngleThreshold() const
+        {
+            return static_cast<float>(
+                getDouble("rule_engine.fall_angle_threshold", 60.0)
+            );
+        }
+
+        float ConfigManager::getRecoveryAngleThreshold() const
+        {
+            return static_cast<float>(
+                getDouble("rule_engine.recovery_angle_threshold", 35.0)
+            );
+        }
+
+        float ConfigManager::getNormalizedVelocityThreshold() const
+        {
+            return static_cast<float>(
+                getDouble("rule_engine.normalized_velocity_threshold", 0.6)
+            );
+        }
+
+        float ConfigManager::getNormalizedCenterVelocityThreshold() const
+        {
+            return static_cast<float>(
+                getDouble(
+                    "rule_engine.normalized_center_velocity_threshold",
+                    0.5
+                )
+            );
+        }
+
+        int ConfigManager::getSuspectConfirmMs() const
+        {
+            return getInt(
+                "rule_engine.suspect_confirm_ms",
+                1000
+            );
+        }
+
+        int ConfigManager::getStaticLieConfirmMs() const
+        {
+            return getInt(
+                "rule_engine.static_lie_confirm_ms",
+                5000
+            );
+        }
+
+        int ConfigManager::getFallEventWindowMs() const
+        {
+            return getInt(
+                "rule_engine.fall_event_window_ms",
+                1500
+            );
+        }
 
         // —— 网络 ——
         std::string ConfigManager::getMqttBroker() const       { return getString("network.mqtt_broker", "tcp://broker.emqx.io:1883"); }

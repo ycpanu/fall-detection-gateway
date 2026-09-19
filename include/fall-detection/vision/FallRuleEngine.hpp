@@ -26,17 +26,49 @@ namespace fall_detection
          */
         struct FallRuleConfig
         {
-            float kptConfThreshold = 0.3f;        // 关键点置信度阈值（低于视为不可见）
-            float fallAngleThreshold = 60.0f;     // 身体轴线(肩→髋)与垂直方向夹角阈值（度）
-            float fallVelocityThreshold = 400.0f; // 髋部下坠速度阈值（像素/秒）
-            int confirmFramesThreshold = 5;       // 下坠后需连续躺倒的报警帧数
-            int staticLieThreshold = 30;          // 无下坠时持续躺倒的兜底报警帧数
-            int fallEventWindow = 15;             // 快速下坠事件的有效窗口（帧）
+            // 关键点置信阈值
+            float kptConfThreshold = 0.3f;
+
+            // 躯干夹角阈值
+            float fallAngleThreshold = 60.0f;
+
+            float recoveryAngleThreshold = 35.0f;
+
+            // 归一化髋部下坠速度阈值
+            float normalizedVelocityThreshold = 0.6f;
+
+            // 人体中心归一化下降速度阈值
+            float normalizedCenterVelocityThreshold = 0.5f;
+
+            // 疑似跌倒后，保持躺倒多长时间才确认报警
+            int suspectConfirmMs = 1000;
+
+            // 没捕获快速下坠时，持续异常躺卧多久进行静态兜底报警
+            int staticLieConfirmMs = 5000;
+
+            // 快速下坠事件在多长时间内仍然有效
+            int fallEventWindowMs = 1500;
         };
 
         /**
-         * @brief 摔倒规则引擎类
-         * 通过身体轴线角度 + 髋部下坠速度 + 时序状态机，将静态关键点转化为动态摔倒判定
+         * @brief 跌倒状态
+         */
+        enum class FallState
+        {
+            NORMAL,             // 正常状态
+            SUSPECTED_FALL,     // 疑似跌倒
+            CONFIRMED_FALL,     // 已确认跌倒
+            ALARMED             // 已产生报警，等待人体恢复
+        };
+
+        /**
+         * @brief 跌倒规则引擎
+         *
+         * 核心依据：
+         * 1. 躯干倾角
+         * 2. 归一化髋部下降速度
+         * 3. 人体整体中心下降
+         * 4. 基于实际时间的状态机
          */
         class FallRuleEngine
         {
@@ -53,15 +85,58 @@ namespace fall_detection
                 bool processFrame(const std::vector<DetectResult>& aiResults, AlertEvent& outEvent);
 
             private:
+                /**
+                 * @brief 完整清空规则引擎状态
+                 *
+                 * 用于长时间没有有效目标等情况。
+                 */
                 void resetState();
 
-                FallRuleConfig config_;                     // 运行时阈值配置
-                int lieConfirmCount_;                       // 躺倒连续帧计数（防抖）
-                bool hasPreviousTarget_;                    // 上一帧是否有有效目标（用于算速度）
-                float previousHipY_;                        // 上一帧髋部中点 Y 坐标
-                std::chrono::steady_clock::time_point lastTime_;  // 上一帧时间戳
-                bool fallEventPending_;                     // 快速下坠事件是否仍在时序窗口内
-                int fallEventFrames_;                       // 下坠事件发生后经过的帧数
+                /**
+                 * @brief 恢复到 NORMAL 状态
+                 *
+                 * 与 resetState() 区分开，
+                 * 后续状态机实现时更清晰。
+                 */
+                void resetToNormal();
+
+           private:
+                // 配置
+                FallRuleConfig config_;
+
+                // 当前状态机状态
+                FallState state_ = FallState::NORMAL;
+
+                // 上一帧人体运动信息
+                bool hasPreviousTarget_ = false;
+
+                // 上一帧髋部中点 Y
+                float previousHipY_ = 0.0f;
+
+                // 上一帧人体检测框中心 Y
+                float previousCenterY_ = 0.0f;
+
+                // 上一帧人体检测框高度
+                // 用于运动特征归一化
+                float previousBodyHeight_ = 0.0f;
+
+                // 上一帧处理时间
+                std::chrono::steady_clock::time_point lastFrameTime_;
+
+                // 进入 SUSPECTED_FALL 的时间
+                std::chrono::steady_clock::time_point suspectedStartTime_;
+
+                // 开始持续躺倒的时间
+                std::chrono::steady_clock::time_point lieStartTime_;
+
+                // 最近一次检测到明显快速下降的时间
+                std::chrono::steady_clock::time_point lastFastDropTime_;
+
+                // 当前是否正在统计静态躺倒时间
+                bool lieTimerActive_ = false;
+
+                // 最近是否发生过快速下降
+                bool fastDropDetected_ = false;
         };
     }
 }

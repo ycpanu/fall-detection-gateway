@@ -136,11 +136,35 @@ int main(int argc, char* argv[])
     }
 
     vision::FallRuleConfig ruleConfig;
-    ruleConfig.fallAngleThreshold = config.getFallAngleThreshold();
-    ruleConfig.fallVelocityThreshold = config.getFallVelocityThreshold();
-    ruleConfig.confirmFramesThreshold = config.getConfirmFramesThreshold();
-    ruleConfig.staticLieThreshold = config.getStaticLieThreshold();
-    ruleConfig.fallEventWindow = config.getFallEventWindow();
+
+    // 关键点置信度
+    ruleConfig.kptConfThreshold =
+        config.getKptConfThreshold();
+
+    // 姿态角度
+    ruleConfig.fallAngleThreshold =
+        config.getFallAngleThreshold();
+
+    ruleConfig.recoveryAngleThreshold =
+        config.getRecoveryAngleThreshold();
+
+    // 运动特征
+    ruleConfig.normalizedVelocityThreshold =
+        config.getNormalizedVelocityThreshold();
+
+    ruleConfig.normalizedCenterVelocityThreshold =
+        config.getNormalizedCenterVelocityThreshold();
+
+    // 时间状态机
+    ruleConfig.suspectConfirmMs =
+        config.getSuspectConfirmMs();
+
+    ruleConfig.staticLieConfirmMs =
+        config.getStaticLieConfirmMs();
+
+    ruleConfig.fallEventWindowMs =
+        config.getFallEventWindowMs();
+
     vision::FallRuleEngine ruleEngine(ruleConfig);
 
     // 4. 初始化流水线通信基础设施
