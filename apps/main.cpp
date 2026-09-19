@@ -24,6 +24,7 @@
 #include "fall-detection/utils/SysLogger.hpp"
 #include "fall-detection/network/LiveStreamer.hpp"
 #include "fall-detection/vision/SafeZoneManager.hpp"
+#include "fall-detection/vision/PersonTracker.hpp"
 
 // #include <syslog.h>
 
@@ -182,6 +183,16 @@ int main(int argc, char* argv[])
 
     vision::FallRuleEngine ruleEngine(ruleConfig, &safeZoneManager);
 
+    vision::PersonTrackerConfig trackerConfig;
+
+    trackerConfig.iouThreshold = 0.20f;
+    trackerConfig.centerDistanceThreshold = 0.80f;
+    trackerConfig.maxMissingMs = 1500;
+
+    vision::PersonTracker personTracker(
+        trackerConfig
+    );
+
     // 4. 初始化流水线通信基础设施
     concurrency::ThreadSafeQueue<cv::Mat> frameQueue(config.getFrameQueueSize());
     concurrency::ThreadSafeQueue<vision::AlertEvent> alertQueue(config.getAlertQueueSize());
@@ -324,6 +335,24 @@ int main(int argc, char* argv[])
         std::vector<vision::DetectResult> aiResults;
         bool detectOk = inferencer.detect(frame, aiResults);
 
+        auto trackedPersons = personTracker.update(aiResults);
+        for (const auto& person : trackedPersons)
+        {
+            const auto& det =
+                person.detection;
+
+            LOG_TRACE(
+                "[PersonTracker] ID={}, "
+                "bbox=({}, {}, {}, {}), conf={:.2f}",
+                person.trackId,
+                det.x,
+                det.y,
+                det.width,
+                det.height,
+                det.confidence
+            );
+        }
+
         auto detectEnd = std::chrono::steady_clock::now();
 
         double detectMs =
@@ -362,14 +391,24 @@ int main(int argc, char* argv[])
                 }
             }
 
-            // ==================== 原有摔倒判定逻辑 ====================
-            vision::AlertEvent event;
+            auto fallEvents =
+                ruleEngine.processFrame(
+                    trackedPersons,
+                    frame.cols,
+                    frame.rows
+                );
 
-            if (ruleEngine.processFrame(aiResults, frame.cols, frame.rows, event))
+            for (auto& event : fallEvents)
             {
-                alertQueue.push(event);
+                LOG_WARN(
+                    "检测到 Track {} 跌倒事件",
+                    event.personTrackId
+                );
+
+                alertQueue.push(
+                    std::move(event)
+                );
             }
-            // =========================================================
         }
 
         // ==================== 每 5 秒输出一次性能 ====================

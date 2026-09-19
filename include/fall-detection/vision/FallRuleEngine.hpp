@@ -1,9 +1,10 @@
 #pragma once
-
+#include <unordered_map>
 #include <vector>
 #include <chrono>
 #include "fall-detection/vision/RKNNInferencer.hpp"
 #include "fall-detection/vision/SafeZoneManager.hpp"
+#include "fall-detection/vision/PersonTracker.hpp"
 
 namespace fall_detection
 {
@@ -19,6 +20,7 @@ namespace fall_detection
             long long timestamp;    // 发生时间戳
             int triggerBoxX;        // 触发报警时的目标中心点 X
             int triggerBoxY;        // 目标中心点 Y
+            int personTrackId = -1;
             std::string videoPath;  // 摔倒现场视频路径
         };
 
@@ -86,65 +88,56 @@ namespace fall_detection
                  * @param outEvent 如果判定摔倒，将报警信息写入该结构体
                  * @return true 代表认为异常摔倒，false 代表正常或过滤
                  */
-                bool processFrame(const std::vector<DetectResult>& aiResults, int frameWidth, int frameHeight, AlertEvent& outEvent);
+                std::vector<AlertEvent> processFrame(const std::vector<TrackedPerson>& trackedPersons, int frameWidth, int frameHeight);
 
             private:
-                /**
-                 * @brief 完整清空规则引擎状态
-                 *
-                 * 用于长时间没有有效目标等情况。
-                 */
-                void resetState();
+                struct PersonState
+                {
+                    // 当前跌倒状态
+                    FallState state = FallState::NORMAL;
 
-                /**
-                 * @brief 恢复到 NORMAL 状态
-                 *
-                 * 与 resetState() 区分开，
-                 * 后续状态机实现时更清晰。
-                 */
-                void resetToNormal();
+                    // 是否已经有上一帧数据
+                    bool hasPreviousTarget = false;
 
-           private:
+                    // 上一帧运动数据
+                    float previousHipY = 0.0f;
+                    float previousCenterY = 0.0f;
+                    float previousBodyHeight = 0.0f;
+
+                    std::chrono::steady_clock::time_point lastFrameTime;
+
+                    // 状态机时间
+                    std::chrono::steady_clock::time_point suspectedStartTime;
+                    std::chrono::steady_clock::time_point lieStartTime;
+                    std::chrono::steady_clock::time_point lastFastDropTime;
+
+                    // 最近一次真正检测到这个人的时间
+                    std::chrono::steady_clock::time_point lastSeenTime;
+
+                    bool lieTimerActive = false;
+                    bool fastDropDetected = false;
+                };
+
+                std::unordered_map<int, PersonState> personStates_;
                 // 配置
                 FallRuleConfig config_;
 
-                // 当前状态机状态
-                FallState state_ = FallState::NORMAL;
-
-                // 上一帧人体运动信息
-                bool hasPreviousTarget_ = false;
-
-                // 上一帧髋部中点 Y
-                float previousHipY_ = 0.0f;
-
-                // 上一帧人体检测框中心 Y
-                float previousCenterY_ = 0.0f;
-
-                // 上一帧人体检测框高度
-                // 用于运动特征归一化
-                float previousBodyHeight_ = 0.0f;
-
-
-                // 上一帧处理时间
-                std::chrono::steady_clock::time_point lastFrameTime_;
-
-                // 进入 SUSPECTED_FALL 的时间
-                std::chrono::steady_clock::time_point suspectedStartTime_;
-
-                // 开始持续躺倒的时间
-                std::chrono::steady_clock::time_point lieStartTime_;
-
-                // 最近一次检测到明显快速下降的时间
-                std::chrono::steady_clock::time_point lastFastDropTime_;
-
-                // 当前是否正在统计静态躺倒时间
-                bool lieTimerActive_ = false;
-
-                // 最近是否发生过快速下降
-                bool fastDropDetected_ = false;
-
                 // 安全区域管理器
                 const SafeZoneManager* safeZoneManager_ = nullptr;
+
+            private:
+                bool processPerson(
+                    const TrackedPerson& person,
+                    int frameWidth,
+                    int frameHeight,
+                    PersonState& personState,
+                    AlertEvent& outEvent);
+
+                void resetPersonToNormal(
+                    PersonState& personState);
+
+                void removeExpiredPersonStates(
+                    const std::chrono::steady_clock::time_point& now);
         };
     }
 }
