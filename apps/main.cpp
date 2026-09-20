@@ -227,11 +227,11 @@ int main(int argc, char* argv[])
             // 采用带超时的出队，确保关机时能及时打破死锁
             if (alertQueue.wait_for_and_pop(event, std::chrono::milliseconds(500))) 
             {
-                if (event.isFall) 
+                if (event.eventType == event::EventType::FALL) 
                 {
                     LOG_INFO("报警线程响应：合成现场取证视频并联动声光告警...");
                     
-                    event.videoPath = config.getVideoOutputDir() + "/fall_" + std::to_string(event.timestamp) + ".mp4";
+                    event.videoPath = config.getVideoOutputDir() + "/fall_" + event.deviceId + ".mp4";
                     videoCacher.saveVideoAsync(event.videoPath, config.getVideoSaveFps());
                     buzzer.triggerAlarm(config.getAlarmDurationMs());
 

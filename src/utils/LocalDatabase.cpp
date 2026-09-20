@@ -121,7 +121,8 @@ namespace fall_detection
                     // 安全读取 text 字段并转换为 std::string
                     const unsigned char* vPath = sqlite3_column_text(stmt, 4);
                     event.videoPath = vPath ? reinterpret_cast<const char*>(vPath) : "";
-                    event.isFall = true;
+                    event.eventType = event::EventType::FALL;
+                    event.source = {event::EventSource::VISION};
                     pendingAlerts.push_back(event);
                 }
                 sqlite3_finalize(stmt);

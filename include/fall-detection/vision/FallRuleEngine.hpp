@@ -5,25 +5,13 @@
 #include "fall-detection/vision/RKNNInferencer.hpp"
 #include "fall-detection/vision/SafeZoneManager.hpp"
 #include "fall-detection/vision/PersonTracker.hpp"
+#include "fall-detection/event/AlertEvent.hpp"
 
 namespace fall_detection
 {
     namespace vision
     {
-        /**
-         * @brief 摔倒事件预警结构体
-         * 用于记录出发报警时的关键信息，准备打包为 JSON 发送给 MQTT
-         */
-        struct AlertEvent
-        {
-            bool isFall;            // 是否确认发生摔倒
-            long long timestamp;    // 发生时间戳
-            int triggerBoxX;        // 触发报警时的目标中心点 X
-            int triggerBoxY;        // 目标中心点 Y
-            int personTrackId = -1;
-            std::string videoPath;  // 摔倒现场视频路径
-        };
-
+        using AlertEvent = event::AlertEvent;
         /**
          * @brief 摔倒规则引擎参数配置（由 ConfigManager 从 config.json 读取后注入）
          */

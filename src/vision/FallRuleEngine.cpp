@@ -685,10 +685,10 @@ namespace fall_detection
             // =====================================================
             if (confirmedThisFrame)
             {
-                outEvent.isFall = true;
-
-                outEvent.personTrackId =
-                    trackId;
+                outEvent.eventType = event::EventType::FALL;
+                outEvent.source = {event::EventSource::VISION};
+                outEvent.status = event::EventStatus::NEW;
+                outEvent.personTrackId = trackId;
 
 
                 outEvent.timestamp =
