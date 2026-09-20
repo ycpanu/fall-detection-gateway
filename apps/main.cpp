@@ -25,6 +25,7 @@
 #include "fall-detection/network/LiveStreamer.hpp"
 #include "fall-detection/vision/SafeZoneManager.hpp"
 #include "fall-detection/vision/PersonTracker.hpp"
+#include "fall-detection/event/EventManager.hpp"
 
 // #include <syslog.h>
 
@@ -192,6 +193,8 @@ int main(int argc, char* argv[])
     vision::PersonTracker personTracker(
         trackerConfig
     );
+
+    event::EventManager eventManager(config.getMqttClientId());
 
     // 4. 初始化流水线通信基础设施
     concurrency::ThreadSafeQueue<cv::Mat> frameQueue(config.getFrameQueueSize());
@@ -398,15 +401,32 @@ int main(int argc, char* argv[])
                     frame.rows
                 );
 
-            for (auto& event : fallEvents)
+            for (auto& fallEvent : fallEvents)
             {
+                /*
+                * FallRuleEngine 只负责判断：
+                * “发生了跌倒”
+                *
+                * EventManager 负责补充：
+                * event_id
+                * device_id
+                */
+                auto managedEvent =
+                    eventManager.prepareEvent(
+                        std::move(fallEvent)
+                    );
+
+
                 LOG_WARN(
-                    "检测到 Track {} 跌倒事件",
-                    event.personTrackId
+                    "报警事件进入队列："
+                    "event_id={}, Track={}",
+                    managedEvent.eventId,
+                    managedEvent.personTrackId
                 );
 
+
                 alertQueue.push(
-                    std::move(event)
+                    std::move(managedEvent)
                 );
             }
         }
