@@ -10,10 +10,37 @@ set(OpenCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/sysroot/usr/lib/aarch64-linux-gnu/cm
 find_package(OpenCV REQUIRED)
 find_package(Threads REQUIRED)
 
+# sherpa-onnx
+set(SHERPA_ONNX_ROOT
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sherpa-onnx"
+)
+
+set(SHERPA_ONNX_INCLUDE_DIR
+    "${SHERPA_ONNX_ROOT}/include"
+)
+
+set(SHERPA_ONNX_LIB_DIR
+    "${SHERPA_ONNX_ROOT}/lib"
+)
+
+set(SHERPA_ONNX_C_API_LIB
+    "${SHERPA_ONNX_LIB_DIR}/libsherpa-onnx-c-api.so"
+)
+
 find_library(RKNN_LIB rknnrt PATHS ${CMAKE_CURRENT_LIST_DIR}/sysroot/usr/lib NO_DEFAULT_PATH)
 find_library(MQTT_CPP_LIB paho-mqttpp3 PATHS ${CMAKE_CURRENT_LIST_DIR}/sysroot/usr/lib NO_DEFAULT_PATH)
 find_library(MQTT_C_LIB paho-mqtt3a PATHS ${CMAKE_CURRENT_LIST_DIR}/sysroot/usr/lib NO_DEFAULT_PATH)
 find_library(SQLITE3_LIB sqlite3 PATHS ${CMAKE_CURRENT_LIST_DIR}/sysroot/usr/lib NO_DEFAULT_PATH)
+
+find_library(
+    ALSA_LIB
+    asound
+    PATHS
+    ${CMAKE_CURRENT_LIST_DIR}/sysroot/usr/lib/aarch64-linux-gnu
+    ${CMAKE_CURRENT_LIST_DIR}/sysroot/usr/lib
+    NO_DEFAULT_PATH
+)
+
 
 # 通过源码编译获取 fmt 和 spdlog，避免依赖 sysroot 中缺失的 .so 文件
 include(FetchContent)
@@ -59,8 +86,55 @@ target_link_libraries(fall_detection_gateway
     ${MQTT_CPP_LIB}
     ${MQTT_C_LIB}
     ${SQLITE3_LIB}
+    ${SHERPA_ONNX_C_API_LIB}
+    ${ALSA_LIB}
     Threads::Threads
 )
 
 # 允许共享库中存在未解析符号——这些符号在目标设备运行时由设备上的系统库提供
-target_link_options(fall_detection_gateway PRIVATE -Wl,--allow-shlib-undefined)
+target_link_options(
+    fall_detection_gateway 
+    PRIVATE 
+    -Wl,--allow-shlib-undefined
+)
+
+# ==============================
+# sherpa-onnx 最小链接测试
+# ==============================
+
+add_executable(
+    sherpa_link_test
+    tests/sherpa_link_test.cpp
+)
+
+target_include_directories(
+    sherpa_link_test
+    PRIVATE
+    ${SHERPA_ONNX_INCLUDE_DIR}
+)
+
+target_link_libraries(
+    sherpa_link_test
+    PRIVATE
+    ${SHERPA_ONNX_C_API_LIB}
+)
+
+# 告诉交叉链接器：
+# sherpa-onnx 的依赖库也位于该目录中
+target_link_options(
+    sherpa_link_test
+    PRIVATE
+    "-Wl,-rpath-link,${SHERPA_ONNX_LIB_DIR}"
+)
+
+target_include_directories(
+    fall_detection_gateway
+    PRIVATE
+    ${SHERPA_ONNX_INCLUDE_DIR}
+)
+
+target_link_options(
+    fall_detection_gateway
+    PRIVATE
+    "-Wl,-rpath-link,${SHERPA_ONNX_LIB_DIR}"
+)

@@ -26,6 +26,8 @@
 #include "fall-detection/vision/SafeZoneManager.hpp"
 #include "fall-detection/vision/PersonTracker.hpp"
 #include "fall-detection/event/EventManager.hpp"
+#include "fall-detection/audio/AudioCapture.hpp"
+#include "fall-detection/audio/KeywordSpotter.hpp"
 
 // #include <syslog.h>
 
@@ -193,6 +195,107 @@ int main(int argc, char* argv[])
     vision::PersonTracker personTracker(
         trackerConfig
     );
+
+    // 离线语音初始化
+    audio::KeywordSpotter keywordSpotter;
+    audio::KeywordSpotterConfig kwsConfig;
+    kwsConfig.encoderPath =
+        "models/kws/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx";
+
+    kwsConfig.decoderPath =
+        "models/kws/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx";
+
+    kwsConfig.joinerPath =
+        "models/kws/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx";
+
+    kwsConfig.tokensPath =
+        "models/kws/tokens.txt";
+
+    kwsConfig.keywordsPath =
+        "models/kws/keywords_custom.txt";
+
+    kwsConfig.sampleRate = 16000;
+    kwsConfig.numThreads = 2;
+
+    bool kwsAvailable =
+        keywordSpotter.initialize(kwsConfig);
+
+
+    if (!kwsAvailable)
+    {
+        LOG_ERROR(
+            "语音关键词识别初始化失败，"
+            "系统将以纯视觉模式继续运行"
+        );
+    }
+    else
+    {
+        LOG_INFO(
+            "离线语音关键词识别模块初始化成功"
+        );
+    }
+
+    audio::AudioCapture audioCapture;
+
+    if (kwsAvailable)
+    {
+        audio::AudioCaptureConfig audioConfig;
+
+        /*
+        * 前面通过 arecord -l 已经确认：
+        *
+        * card 2
+        * device 0
+        */
+        audioConfig.device =
+            "plughw:CARD=Device,DEV=0";
+
+        audioConfig.sampleRate =
+            16000;
+
+        audioConfig.channels =
+            1;
+
+        /*
+        * 100ms 音频：
+        *
+        * 16000 × 0.1 = 1600 samples
+        */
+        audioConfig.framesPerChunk =
+            1600;
+
+
+        const bool audioStarted =
+            audioCapture.start(
+                audioConfig,
+
+                [&](const std::vector<float>& samples)
+                {
+                    auto keyword =
+                        keywordSpotter.processSamples(
+                            samples
+                        );
+
+
+                    if (keyword)
+                    {
+                        LOG_WARN(
+                            "【语音求救】检测到关键词：{}",
+                            *keyword
+                        );
+                    }
+                }
+            );
+
+
+        if (!audioStarted)
+        {
+            LOG_ERROR(
+                "USB 麦克风启动失败，"
+                "系统将以纯视觉模式继续运行"
+            );
+        }
+    }
 
     event::EventManager eventManager(config.getMqttClientId());
 
@@ -470,6 +573,7 @@ int main(int argc, char* argv[])
     LOG_INFO("接收到退出信号，正在安全释放所有系统组件...");
     streamer->stop();
     liveStreamer.stop();
+    audioCapture.stop();
     
     if (heartbeatThread.joinable()) heartbeatThread.join();
 

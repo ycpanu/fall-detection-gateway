@@ -26,3 +26,6 @@ __pycache__/
 .claude/
 .vscode/
 .venv
+
+sherpa-kws/
+third_party/
