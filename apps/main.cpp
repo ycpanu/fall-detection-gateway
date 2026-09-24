@@ -235,7 +235,14 @@ int main(int argc, char* argv[])
         );
     }
 
+    auto lastVoiceTriggerTime = std::chrono::steady_clock::time_point{};
     audio::AudioCapture audioCapture;
+    event::EventManager eventManager(config.getMqttClientId());
+
+    // 4. 初始化流水线通信基础设施
+    concurrency::ThreadSafeQueue<cv::Mat> frameQueue(config.getFrameQueueSize());
+    concurrency::ThreadSafeQueue<vision::AlertEvent> alertQueue(config.getAlertQueueSize());
+    vision::VideoCacher videoCacher(config.getVideoCacheFrames());
 
     if (kwsAvailable)
     {
@@ -279,10 +286,72 @@ int main(int argc, char* argv[])
 
                     if (keyword)
                     {
-                        LOG_WARN(
-                            "【语音求救】检测到关键词：{}",
-                            *keyword
-                        );
+                        const auto now =
+                            std::chrono::steady_clock::now();
+
+
+                        const auto elapsedMs =
+                            std::chrono::duration_cast<
+                                std::chrono::milliseconds
+                            >(
+                                now - lastVoiceTriggerTime
+                            ).count();
+
+
+                        constexpr long long VOICE_COOLDOWN_MS =
+                            5000;
+
+
+                        /*
+                        * 第一次触发，或者距离上次已经超过5秒。
+                        */
+                        if (lastVoiceTriggerTime.time_since_epoch().count() == 0 ||
+                            elapsedMs >= VOICE_COOLDOWN_MS)
+                        {
+                            lastVoiceTriggerTime =
+                                now;
+
+
+                            LOG_WARN(
+                                "【语音求救】检测到关键词：{}",
+                                *keyword
+                            );
+
+
+                            fall_detection::event::AlertEvent voiceEvent;
+
+                            voiceEvent.eventType =
+                                fall_detection::event::EventType::HELP_REQUEST;
+
+                            voiceEvent.source = {
+                                fall_detection::event::EventSource::VOICE
+                            };
+
+                            voiceEvent.status =
+                                fall_detection::event::EventStatus::NEW;
+
+                            voiceEvent.keyword =
+                                *keyword;
+
+                            voiceEvent.timestamp =
+                                std::chrono::duration_cast<
+                                    std::chrono::milliseconds
+                                >(
+                                    std::chrono::system_clock::now()
+                                        .time_since_epoch()
+                                ).count();
+
+
+                            auto managedEvent =
+                                eventManager.prepareEvent(
+                                    std::move(voiceEvent)
+                                );
+
+
+                            alertQueue.push(
+                                std::move(managedEvent)
+                            );
+                        }
                     }
                 }
             );
@@ -296,13 +365,6 @@ int main(int argc, char* argv[])
             );
         }
     }
-
-    event::EventManager eventManager(config.getMqttClientId());
-
-    // 4. 初始化流水线通信基础设施
-    concurrency::ThreadSafeQueue<cv::Mat> frameQueue(config.getFrameQueueSize());
-    concurrency::ThreadSafeQueue<vision::AlertEvent> alertQueue(config.getAlertQueueSize());
-    vision::VideoCacher videoCacher(config.getVideoCacheFrames());
 
     // 5. 启动“眼睛”
     std::unique_ptr<vision::CameraStreamer> streamer;
@@ -333,35 +395,26 @@ int main(int argc, char* argv[])
             // 采用带超时的出队，确保关机时能及时打破死锁
             if (alertQueue.wait_for_and_pop(event, std::chrono::milliseconds(500))) 
             {
-                if (event.eventType == event::EventType::FALL) 
+                if (event.eventType == fall_detection::event::EventType::FALL)
                 {
-                    LOG_INFO("报警线程响应：合成现场取证视频并联动声光告警...");
-                    
-                    event.videoPath = config.getVideoOutputDir() + "/fall_" + event.deviceId + ".mp4";
-                    videoCacher.saveVideoAsync(event.videoPath, config.getVideoSaveFps());
-                    buzzer.triggerAlarm(config.getAlarmDurationMs());
-
-                    // Store-and-Forward 容灾上报闭环
-                    if (mqttClient.isConnected()) 
-                    {
-                        auto pendingAlerts = localDb.getPendingAlerts();
-                        for (const auto& pa : pendingAlerts) 
-                        {
-                            if (mqttClient.publishAlert(config.getAlertTopic(), pa)) 
-                            {
-                                localDb.markAsUploaded(pa.dbId);
-                            }
-                        }
-                        if (!mqttClient.publishAlert(config.getAlertTopic(), event)) 
-                        {
-                            localDb.saveAlert(event);
-                        }
-                    } 
-                    else 
-                    {
-                        localDb.saveAlert(event);
-                    }
+                    LOG_WARN(
+                        "收到跌倒报警：event_id={}",
+                        event.eventId
+                    );
                 }
+                else if (
+                    event.eventType ==
+                    fall_detection::event::EventType::HELP_REQUEST)
+                {
+                    LOG_WARN(
+                        "收到语音求救报警："
+                        "event_id={}, keyword={}",
+                        event.eventId,
+                        event.keyword
+                    );
+                }
+
+                buzzer.triggerAlarm(config.getAlarmDurationMs());
             }
         }
     });
