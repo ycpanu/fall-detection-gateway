@@ -4,7 +4,7 @@
 #include <memory>
 #include <functional>
 #include <mqtt/async_client.h>
-#include "fall-detection/vision/FallRuleEngine.hpp"
+#include "fall-detection/event/AlertEvent.hpp"
 
 namespace fall_detection
 {
@@ -42,12 +42,12 @@ namespace fall_detection
                 void disconnect();
 
                 /**
-                 * @brief 发布摔倒报警事件
+                 * @brief 发布统一报警事件
                  * @param topic 发布的主题 (例如 "gateway/fall_alert")
                  * @param event 规则引擎产生的报警事件数据
                  * @return 消息是否成功放入发送队列
                  */
-                bool publishAlert(const std::string& topic, const vision::AlertEvent& event);
+                bool publishAlert(const std::string& topic, const fall_detection::event::AlertEvent& alertEvent);
 
                 // 发布硬件状态（心跳）
                 bool publishStatus(const std::string& topic, int npuUsage);

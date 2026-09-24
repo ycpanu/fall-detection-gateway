@@ -415,6 +415,21 @@ int main(int argc, char* argv[])
                 }
 
                 buzzer.triggerAlarm(config.getAlarmDurationMs());
+
+                // MQTT 上报
+                if (mqttClient.isConnected())
+                {
+                    LOG_INFO("MQTT在线，准备上报: event_id={}, type={}", event.eventId, fall_detection::event::toString(event.eventType));
+                    
+                    if (!mqttClient.publishAlert(config.getAlertTopic(), event))
+                    {
+                        LOG_ERROR("MQTT报警发送失败: event_id={}", event.eventId);
+                    }
+                }
+                else
+                {
+                    LOG_WARN("MQTT当前离线,暂时无法上报警报: event_id={}", event.eventId);
+                }
             }
         }
     });
