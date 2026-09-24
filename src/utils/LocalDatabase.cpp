@@ -42,14 +42,22 @@ namespace fall_detection
             // 大幅提升 SQLite 的并发读写性能，将随机 I/O 转化为顺序 I/O
             executeSQL("PRAGMA journal_mode=WAL;");
 
-            std::string createTableSQL = 
+            std::string createTableSQL =
                 "CREATE TABLE IF NOT EXISTS alerts ("
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "event_id TEXT NOT NULL UNIQUE, "
+                "device_id TEXT NOT NULL, "
+                "event_type TEXT NOT NULL, "
+                "sources TEXT NOT NULL, "
                 "timestamp INTEGER NOT NULL, "
-                "trigger_x INTEGER NOT NULL, "
-                "trigger_y INTEGER NOT NULL, "
-                "video_path TEXT, " 
-                "status TEXT NOT NULL);";
+                "person_track_id INTEGER DEFAULT -1, "
+                "trigger_x INTEGER DEFAULT 0, "
+                "trigger_y INTEGER DEFAULT 0, "
+                "keyword TEXT DEFAULT '', "
+                "video_path TEXT DEFAULT '', "
+                "event_status TEXT NOT NULL, "
+                "upload_status TEXT NOT NULL DEFAULT 'pending'"
+                ");";
 
             if (!executeSQL(createTableSQL))
             {
@@ -79,58 +87,302 @@ namespace fall_detection
             return true;
         }
 
-        bool LocalDatabase::saveAlert(const vision::AlertEvent& event)
+        bool LocalDatabase::saveAlert(const event::AlertEvent& alertEvent)
         {
-            if (!isInitialized_) return false;
-
-            std::string insertSQL = "INSERT INTO alerts (timestamp, trigger_x, trigger_y, video_path, status) VALUES (" +
-                                std::to_string(event.timestamp) + ", " +
-                                std::to_string(event.triggerBoxX) + ", " +
-                                std::to_string(event.triggerBoxY) + ", '" +
-                                event.videoPath + "', 'pending');";
-            
-            // 极速内存入队，绝不在此处进行磁盘 I/O 阻塞
+            if (!isInitialized_)
             {
-                std::lock_guard<std::mutex> lock(queueMtx_);
-                sqlQueue_.push(std::move(insertSQL));
+                return false;
             }
+
+
+            // sources 转成字符串，例如：
+            // VISION
+            // VOICE
+            // VISION,VOICE
+
+            std::string sourcesStr;
+
+            for (std::size_t i = 0;
+                i < alertEvent.source.size();
+                ++i)
+            {
+                if (i > 0)
+                {
+                    sourcesStr += ",";
+                }
+
+                sourcesStr +=
+                    event::toString(
+                        alertEvent.source[i]
+                    );
+            }
+
+
+            std::string insertSQL =
+                "INSERT OR IGNORE INTO alerts ("
+                "event_id, "
+                "device_id, "
+                "event_type, "
+                "sources, "
+                "timestamp, "
+                "person_track_id, "
+                "trigger_x, "
+                "trigger_y, "
+                "keyword, "
+                "video_path, "
+                "event_status, "
+                "upload_status"
+                ") VALUES ('"
+
+                + alertEvent.eventId + "', '"
+                + alertEvent.deviceId + "', '"
+                + event::toString(alertEvent.eventType) + "', '"
+                + sourcesStr + "', "
+                + std::to_string(alertEvent.timestamp) + ", "
+                + std::to_string(alertEvent.personTrackId) + ", "
+                + std::to_string(alertEvent.triggerBoxX) + ", "
+                + std::to_string(alertEvent.triggerBoxY) + ", '"
+                + alertEvent.keyword + "', '"
+                + alertEvent.videoPath + "', '"
+                + event::toString(alertEvent.status) + "', "
+                "'pending');";
+
+
+            {
+                std::lock_guard<std::mutex> lock(
+                    queueMtx_
+                );
+
+                sqlQueue_.push(
+                    std::move(insertSQL)
+                );
+            }
+
+
             cv_.notify_one();
-            
-            LOG_WARN("已触发断网容灾存储：报警数据进入异步写盘队列，等待网络恢复。");
+
+
+            LOG_WARN(
+                "报警事件已进入本地持久化队列："
+                "event_id={}, type={}",
+                alertEvent.eventId,
+                event::toString(
+                    alertEvent.eventType
+                )
+            );
+
+
             return true;
         }
         
-        std::vector<DBAlertEvent> LocalDatabase::getPendingAlerts()
+        std::vector<DBAlertEvent>LocalDatabase::getPendingAlerts()
         {
             std::vector<DBAlertEvent> pendingAlerts;
-            if (!isInitialized_) return pendingAlerts;
 
-            std::string querySQL = "SELECT id, timestamp, trigger_x, trigger_y, video_path FROM alerts WHERE status = 'pending';";
-            sqlite3_stmt* stmt;
-
-            if (sqlite3_prepare_v2(db_, querySQL.c_str(), -1, &stmt, nullptr) == SQLITE_OK)
+            if (!isInitialized_)
             {
-                while (sqlite3_step(stmt) == SQLITE_ROW)
+                return pendingAlerts;
+            }
+
+            const std::string querySQL =
+                "SELECT "
+                "id, "
+                "event_id, "
+                "device_id, "
+                "event_type, "
+                "sources, "
+                "timestamp, "
+                "person_track_id, "
+                "trigger_x, "
+                "trigger_y, "
+                "keyword, "
+                "video_path, "
+                "event_status "
+                "FROM alerts "
+                "WHERE upload_status = 'pending';";
+
+            sqlite3_stmt* stmt = nullptr;
+
+            if (sqlite3_prepare_v2(
+                    db_,
+                    querySQL.c_str(),
+                    -1,
+                    &stmt,
+                    nullptr) != SQLITE_OK)
+            {
+                LOG_ERROR(
+                    "查询待上传报警记录失败：{}",
+                    sqlite3_errmsg(db_)
+                );
+
+                return pendingAlerts;
+            }
+
+            while (sqlite3_step(stmt) ==
+                SQLITE_ROW)
+            {
+                DBAlertEvent alertEvent;
+
+
+                alertEvent.dbId =
+                    sqlite3_column_int(
+                        stmt,
+                        0
+                    );
+
+                const auto* eventId =
+                    sqlite3_column_text(
+                        stmt,
+                        1
+                    );
+
+                alertEvent.eventId =
+                    eventId
+                        ? reinterpret_cast<
+                            const char*>(eventId)
+                        : "";
+
+                const auto* deviceId =
+                    sqlite3_column_text(
+                        stmt,
+                        2
+                    );
+
+                alertEvent.deviceId =
+                    deviceId
+                        ? reinterpret_cast<
+                            const char*>(deviceId)
+                        : "";
+
+
+                // event_type
+                std::string eventTypeStr;
+
+                const auto* eventType =
+                    sqlite3_column_text(
+                        stmt,
+                        3
+                    );
+
+                if (eventType)
                 {
-                    DBAlertEvent event;
-                    event.dbId = sqlite3_column_int(stmt, 0);
-                    event.timestamp = sqlite3_column_int64(stmt, 1);
-                    event.triggerBoxX = sqlite3_column_int(stmt, 2);
-                    event.triggerBoxY = sqlite3_column_int(stmt, 3);
-
-                    // 安全读取 text 字段并转换为 std::string
-                    const unsigned char* vPath = sqlite3_column_text(stmt, 4);
-                    event.videoPath = vPath ? reinterpret_cast<const char*>(vPath) : "";
-                    event.eventType = event::EventType::FALL;
-                    event.source = {event::EventSource::VISION};
-                    pendingAlerts.push_back(event);
+                    eventTypeStr =
+                        reinterpret_cast<
+                            const char*>(eventType);
                 }
-                sqlite3_finalize(stmt);
+
+
+                if (eventTypeStr == "HELP_REQUEST")
+                {
+                    alertEvent.eventType =
+                        event::EventType::HELP_REQUEST;
+                }
+                else
+                {
+                    alertEvent.eventType =
+                        event::EventType::FALL;
+                }
+
+
+                // sources
+                std::string sourcesStr;
+
+                const auto* sources =
+                    sqlite3_column_text(
+                        stmt,
+                        4
+                    );
+
+                if (sources)
+                {
+                    sourcesStr =
+                        reinterpret_cast<
+                            const char*>(sources);
+                }
+
+
+                if (sourcesStr.find("VISION") !=
+                    std::string::npos)
+                {
+                    alertEvent.source.push_back(
+                        event::EventSource::VISION
+                    );
+                }
+
+                if (sourcesStr.find("VOICE") !=
+                    std::string::npos)
+                {
+                    alertEvent.source.push_back(
+                        event::EventSource::VOICE
+                    );
+                }
+
+
+                alertEvent.timestamp =
+                    sqlite3_column_int64(
+                        stmt,
+                        5
+                    );
+
+                alertEvent.personTrackId =
+                    sqlite3_column_int(
+                        stmt,
+                        6
+                    );
+
+                alertEvent.triggerBoxX =
+                    sqlite3_column_int(
+                        stmt,
+                        7
+                    );
+
+                alertEvent.triggerBoxY =
+                    sqlite3_column_int(
+                        stmt,
+                        8
+                    );
+
+
+                const auto* keyword =
+                    sqlite3_column_text(
+                        stmt,
+                        9
+                    );
+
+                alertEvent.keyword =
+                    keyword
+                        ? reinterpret_cast<
+                            const char*>(keyword)
+                        : "";
+
+
+                const auto* videoPath =
+                    sqlite3_column_text(
+                        stmt,
+                        10
+                    );
+
+                alertEvent.videoPath =
+                    videoPath
+                        ? reinterpret_cast<
+                            const char*>(videoPath)
+                        : "";
+
+
+                // 当前 pending 事件读取回来时，
+                // 业务状态默认为 NEW。
+                // 后续后台 ACK/RESOLVED 再完善。
+                alertEvent.status =
+                    event::EventStatus::NEW;
+
+
+                pendingAlerts.push_back(
+                    std::move(alertEvent)
+                );
             }
-            else
-            {
-                LOG_ERROR("查询待上传报警记录失败：{}", sqlite3_errmsg(db_));
-            }
+
+
+            sqlite3_finalize(stmt);
 
             return pendingAlerts;
         }
@@ -138,8 +390,13 @@ namespace fall_detection
         bool LocalDatabase::markAsUploaded(int id)
         {
             if (!isInitialized_) return false;
-            std::string updateSQL = "UPDATE alerts SET status = 'uploaded' WHERE id = " + std::to_string(id) + ";";
-            
+            std::string updateSQL =
+                "UPDATE alerts "
+                "SET upload_status = 'uploaded' "
+                "WHERE id = "
+                + std::to_string(id)
+                + ";";
+                
             // 同样放入异步队列更新状态，消除同步等待
             {
                 std::lock_guard<std::mutex> lock(queueMtx_);

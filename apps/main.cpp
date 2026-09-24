@@ -419,16 +419,30 @@ int main(int argc, char* argv[])
                 // MQTT 上报
                 if (mqttClient.isConnected())
                 {
-                    LOG_INFO("MQTT在线，准备上报: event_id={}, type={}", event.eventId, fall_detection::event::toString(event.eventType));
+                    // 补传历史报警
+                    auto pendingAlerts = localDb.getPendingAlerts();
+                    for (auto& pendingEvent : pendingAlerts)
+                    {
+                        LOG_INFO("准备补传历史报警: event_id={}, type={}", pendingEvent.eventId, event::toString(pendingEvent.eventType));
+
+                        if (mqttClient.publishAlert(config.getAlertTopic(), pendingEvent))
+                        {
+                            localDb.markAsUploaded(pendingEvent.dbId);
+                        }
+                    }
+
+                    LOG_INFO("MQTT在线, 准备上报: event_id={}, type={}", event.eventId, fall_detection::event::toString(event.eventType));
                     
                     if (!mqttClient.publishAlert(config.getAlertTopic(), event))
                     {
                         LOG_ERROR("MQTT报警发送失败: event_id={}", event.eventId);
+                        localDb.saveAlert(event);
                     }
                 }
                 else
                 {
                     LOG_WARN("MQTT当前离线,暂时无法上报警报: event_id={}", event.eventId);
+                    localDb.saveAlert(event);
                 }
             }
         }

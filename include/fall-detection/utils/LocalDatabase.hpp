@@ -8,15 +8,15 @@
 #include <queue>
 #include <mutex>
 #include <condition_variable>
-#include "fall-detection/vision/FallRuleEngine.hpp"
+#include "fall-detection/event/AlertEvent.hpp"
 
 namespace fall_detection
 {
     namespace utils
     {
-        struct DBAlertEvent : public vision::AlertEvent
+        struct DBAlertEvent : public event::AlertEvent
         {
-            int dbId;
+            int dbId = 0;
         };
 
         class LocalDatabase
@@ -28,7 +28,7 @@ namespace fall_detection
                 bool init();
 
                 // 异步存盘，极速返回，绝对不阻塞调用线程
-                bool saveAlert(const vision::AlertEvent& event);
+                bool saveAlert(const event::AlertEvent& event);
 
                 // 同步读取积压数据（由于仅在重连时调用，不影响实时主干，可保持同步）
                 std::vector<DBAlertEvent> getPendingAlerts();
