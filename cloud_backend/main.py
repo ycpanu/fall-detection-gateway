@@ -17,19 +17,82 @@ engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# 原有的报警记录表
+# 报警记录表
 class AlertRecord(Base):
     __tablename__ = "alerts"
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    device_id = Column(String, index=True)
-    timestamp = Column(Integer)
-    server_receive_time = Column(Integer)
-    trigger_x = Column(Integer)
-    trigger_y = Column(Integer)
-    status = Column(String, default="CRITICAL")
-    video_url = Column(String, default="")
 
-# 【新增】：设备台账与心跳状态表
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+        autoincrement=True
+    )
+
+    # 网关生成的全局唯一事件 ID
+    event_id = Column(
+        String,
+        unique=True,
+        index=True,
+        nullable=False
+    )
+
+    device_id = Column(
+        String,
+        index=True,
+        nullable=False
+    )
+
+    # FALL / HELP_REQUEST
+    event_type = Column(
+        String,
+        nullable=False
+    )
+
+    # JSON字符串，例如：
+    # ["VISION"]
+    # ["VOICE"]
+    # ["VISION", "VOICE"]
+    sources = Column(
+        String,
+        default="[]"
+    )
+
+    timestamp = Column(Integer)
+
+    server_receive_time = Column(Integer)
+
+    person_track_id = Column(
+        Integer,
+        default=-1
+    )
+
+    trigger_x = Column(
+        Integer,
+        default=0
+    )
+
+    trigger_y = Column(
+        Integer,
+        default=0
+    )
+
+    keyword = Column(
+        String,
+        default=""
+    )
+
+    # NEW / ACKNOWLEDGED / RESOLVED
+    status = Column(
+        String,
+        default="NEW"
+    )
+
+    video_url = Column(
+        String,
+        default=""
+    )
+
+# 设备台账与心跳状态表
 class DeviceRecord(Base):
     __tablename__ = "devices"
     device_id = Column(String, primary_key=True, index=True)
@@ -47,9 +110,7 @@ def get_db():
     finally:
         db.close()
 
-# ==========================================
 # 2. 全局配置与 MQTT
-# ==========================================
 MQTT_BROKER = "10.48.212.22"
 MQTT_PORT = 1883
 ALERT_TOPIC = "fall_detection/alerts"
@@ -60,9 +121,7 @@ mqtt_client = None
 class LiveCommand(BaseModel):
     rtmp_url: str
 
-# ==========================================
 # 3. MQTT 回调函数 (核心重构)
-# ==========================================
 def on_connect(client, userdata, flags, rc):
     print(f"[MQTT] 已连接到云端 Broker，状态码: {rc}")
     client.subscribe(ALERT_TOPIC, qos=1)
@@ -90,27 +149,128 @@ def on_message(client, userdata, msg):
             
         # 【路由 B】：处理摔倒报警事件
         elif topic == ALERT_TOPIC:
-            print(f"\n[MQTT] 收到报警数据: {payload}")
-            new_alert = AlertRecord(
-                device_id=data.get("device_id", "unknown"),
-                timestamp=data.get("timestamp", 0),
-                server_receive_time=int(time.time() * 1000),
-                trigger_x=data.get("data", {}).get("trigger_x", 0),
-                trigger_y=data.get("data", {}).get("trigger_y", 0),
-                status=data.get("data", {}).get("status", "CRITICAL"),
-                video_url=data.get("data", {}).get("video_url", "")
+            print(
+                f"\n[MQTT] 收到统一报警事件: "
+                f"{payload}"
             )
+
+            event_id = data.get(
+                "event_id",
+                ""
+            )
+
+            if not event_id:
+                print(
+                    "[MQTT] 报警数据缺少 event_id，忽略"
+                )
+                return
+
+
+            # =====================================
+            # event_id 幂等检查
+            # =====================================
+
+            existing_alert = (
+                db.query(AlertRecord)
+                .filter(
+                    AlertRecord.event_id == event_id
+                )
+                .first()
+            )
+
+            if existing_alert:
+                print(
+                    f"[MQTT] 重复报警事件，忽略："
+                    f"event_id={event_id}"
+                )
+
+                return
+
+
+            event_data = data.get(
+                "data",
+                {}
+            )
+
+
+            new_alert = AlertRecord(
+                event_id=event_id,
+
+                device_id=data.get(
+                    "device_id",
+                    "unknown"
+                ),
+
+                event_type=data.get(
+                    "event_type",
+                    "UNKNOWN"
+                ),
+
+                sources=json.dumps(
+                    data.get(
+                        "sources",
+                        []
+                    ),
+                    ensure_ascii=False
+                ),
+
+                timestamp=data.get(
+                    "timestamp",
+                    0
+                ),
+
+                server_receive_time=int(
+                    time.time() * 1000
+                ),
+
+                person_track_id=event_data.get(
+                    "person_track_id",
+                    -1
+                ),
+
+                trigger_x=event_data.get(
+                    "trigger_x",
+                    0
+                ),
+
+                trigger_y=event_data.get(
+                    "trigger_y",
+                    0
+                ),
+
+                keyword=event_data.get(
+                    "keyword",
+                    ""
+                ),
+
+                status=data.get(
+                    "status",
+                    "NEW"
+                ),
+
+                video_url=event_data.get(
+                    "video_url",
+                    ""
+                )
+            )
+
+
             db.add(new_alert)
             db.commit()
+
+
+            print(
+                f"[MQTT] 报警事件已持久化："
+                f"event_id={event_id}, "
+                f"type={new_alert.event_type}"
+            )
             
     except Exception as e:
         print(f"[MQTT] 解析消息失败: {e}")
     finally:
         db.close()
 
-# ==========================================
 # 4. FastAPI 生命周期与 API
-# ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global mqtt_client
@@ -131,25 +291,78 @@ app = FastAPI(title="摔倒检测云端管理系统", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/api/alerts")
-async def get_alerts(limit: int = 50, db: Session = Depends(get_db)):
-    # 1. 从数据库拉取原始 SQLAlchemy 对象
-    alerts = db.query(AlertRecord).order_by(AlertRecord.server_receive_time.desc()).limit(limit).all()
-    
-    # 2. 显式转换为标准的 Python 字典，防止 JSON 序列化报错崩溃
+async def get_alerts(
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    alerts = (
+        db.query(AlertRecord)
+        .order_by(
+            AlertRecord.server_receive_time.desc()
+        )
+        .limit(limit)
+        .all()
+    )
+
+
     res_list = []
-    for a in alerts:
+
+
+    for alert in alerts:
+        try:
+            sources = json.loads(
+                alert.sources or "[]"
+            )
+        except Exception:
+            sources = []
+
+
         res_list.append({
-            "id": a.id,
-            "device_id": a.device_id,
-            "timestamp": a.timestamp,
-            "server_receive_time": a.server_receive_time,
-            "trigger_x": a.trigger_x,
-            "trigger_y": a.trigger_y,
-            "status": a.status,
-            "video_url": a.video_url
+            "id":
+                alert.id,
+
+            "event_id":
+                alert.event_id,
+
+            "device_id":
+                alert.device_id,
+
+            "event_type":
+                alert.event_type,
+
+            "sources":
+                sources,
+
+            "timestamp":
+                alert.timestamp,
+
+            "server_receive_time":
+                alert.server_receive_time,
+
+            "person_track_id":
+                alert.person_track_id,
+
+            "trigger_x":
+                alert.trigger_x,
+
+            "trigger_y":
+                alert.trigger_y,
+
+            "keyword":
+                alert.keyword,
+
+            "status":
+                alert.status,
+
+            "video_url":
+                alert.video_url
         })
-        
-    return {"code": 200, "data": res_list}
+
+
+    return {
+        "code": 200,
+        "data": res_list
+    }
 
 @app.get("/api/dashboard")
 async def get_dashboard(db: Session = Depends(get_db)):
