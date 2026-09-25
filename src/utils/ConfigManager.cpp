@@ -90,6 +90,17 @@ namespace fall_detection
             return (node != nullptr && node->is_boolean()) ? node->get<bool>() : defaultValue;
         }
 
+        // 设备信息
+        std::string ConfigManager::getDeviceId() const
+        {
+            return getString("device.device_id", "OrangePi_Gateway_001");
+        }
+
+        std::string ConfigManager::getDeploymentArea() const
+        {
+            return getString("device.deployment_area", "未配置区域");
+        }
+
         // —— 系统 ——
         std::string ConfigManager::getLogFilePath() const { return getString("system.log_file_path", "logs/gateway.log"); }
         std::string ConfigManager::getLogLevel() const     { return getString("system.log_level", "INFO"); }

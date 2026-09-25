@@ -95,11 +95,32 @@ class AlertRecord(Base):
 # 设备台账与心跳状态表
 class DeviceRecord(Base):
     __tablename__ = "devices"
-    device_id = Column(String, primary_key=True, index=True)
-    location = Column(String, default="未分配位置")
-    model_version = Column(String, default="YOLOv8n-Pose.rknn")
-    npu_usage = Column(Integer, default=0)
-    last_online_time = Column(Integer, default=0)
+
+    device_id = Column(
+        String,
+        primary_key=True,
+        index=True
+    )
+
+    deployment_area = Column(
+        String,
+        default="未配置区域"
+    )
+
+    model_version = Column(
+        String,
+        default="YOLOv8n-Pose.rknn"
+    )
+
+    npu_usage = Column(
+        Integer,
+        default=0
+    )
+
+    last_online_time = Column(
+        Integer,
+        default=0
+    )
 
 Base.metadata.create_all(bind=engine)
 
@@ -138,13 +159,39 @@ def on_message(client, userdata, msg):
         if topic.startswith("fall_detection/status/"):
             print(f"[MQTT] 收到设备心跳与状态: {payload}")
             dev_id = data.get("device_id", "unknown")
-            dev = db.query(DeviceRecord).filter(DeviceRecord.device_id == dev_id).first()
+            deployment_area = data.get(
+                "deployment_area",
+                "未配置区域"
+            )
+
+            dev = (
+                db.query(DeviceRecord)
+                .filter(
+                    DeviceRecord.device_id == dev_id
+                )
+                .first()
+            )
+
             if not dev:
-                dev = DeviceRecord(device_id=dev_id, location="客厅测试点")
+                dev = DeviceRecord(
+                    device_id=dev_id
+                )
+
                 db.add(dev)
-            
-            dev.npu_usage = data.get("npu_usage", 0)
-            dev.last_online_time = int(time.time() * 1000) # 更新最后存活时间
+
+
+            # 每次心跳都同步部署区域
+            dev.deployment_area = deployment_area
+
+            dev.npu_usage = data.get(
+                "npu_usage",
+                0
+            )
+
+            dev.last_online_time = int(
+                time.time() * 1000
+            )
+
             db.commit()
             
         # 【路由 B】：处理摔倒报警事件
@@ -409,10 +456,19 @@ async def get_devices(db: Session = Depends(get_db)):
         # 判断是否在 30 秒内有过心跳
         is_online = (current_time - d.last_online_time <= 30000)
         res_list.append({
-            "device_id": d.device_id,
-            "location": d.location,
-            "status": "🟢 在线" if is_online else "🔴 离线",
-            "model_version": d.model_version
+            "device_id":
+                d.device_id,
+
+            "deployment_area":
+                d.deployment_area,
+
+            "status":
+                "🟢 在线"
+                if is_online
+                else "🔴 离线",
+
+            "model_version":
+                d.model_version
         })
         
     return {"code": 200, "data": res_list}

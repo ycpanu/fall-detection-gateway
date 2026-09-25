@@ -88,7 +88,7 @@ int main(int argc, char* argv[])
     }
 
     network::LiveStreamer liveStreamer(640, 480, 30);
-    network::MqttClient mqttClient(config.getMqttBroker(), config.getMqttClientId(), config.getKeepAliveSeconds());
+    network::MqttClient mqttClient(config.getMqttBroker(), config.getDeviceId(), config.getKeepAliveSeconds());
 
     // 注册 MQTT 信息回调，处理小程序发来的指令
     mqttClient.setMessageCallback([&](const std::string& topic, const std::string& payload)
@@ -128,7 +128,7 @@ int main(int argc, char* argv[])
     {
         std::string cmdTopic =
             "fall_detection/commands/" +
-            config.getMqttClientId();
+            config.getDeviceId();
 
         mqttClient.subscribe(cmdTopic);
     }
@@ -237,7 +237,7 @@ int main(int argc, char* argv[])
 
     auto lastVoiceTriggerTime = std::chrono::steady_clock::time_point{};
     audio::AudioCapture audioCapture;
-    event::EventManager eventManager(config.getMqttClientId());
+    event::EventManager eventManager(config.getDeviceId());
 
     // 4. 初始化流水线通信基础设施
     concurrency::ThreadSafeQueue<cv::Mat> frameQueue(config.getFrameQueueSize());
@@ -480,8 +480,8 @@ int main(int argc, char* argv[])
                     npuUsage = 50 + (rand() % 25);
                 }
 
-                std::string statusTopic = "fall_detection/status/" + config.getMqttClientId();
-                mqttClient.publishStatus(statusTopic, npuUsage);
+                std::string statusTopic = "fall_detection/status/" + config.getDeviceId();
+                mqttClient.publishStatus(statusTopic, npuUsage, config.getDeploymentArea());
                 LOG_TRACE("已向云端发送设备存活心跳，当前系统 NPU 负载: {}", npuUsage);
             }
             // 为了保证系统收到 Ctrl+C 能立即退出，把 10 秒的休眠切成 100 份

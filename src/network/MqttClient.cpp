@@ -264,26 +264,55 @@ namespace fall_detection
         }
 
         // 用于发送低负载的心跳包
-        bool MqttClient::publishStatus(const std::string& topic, int npuUsage)
+        bool MqttClient::publishStatus(const std::string& topic,int npuUsage,
+            const std::string& deploymentArea)
         {
-            if (!isConnected()) return false;
-            try 
+            if (!isConnected())
+            {
+                return false;
+            }
+
+            try
             {
                 json payloadJson;
-                payloadJson["device_id"] = clientId_;
-                payloadJson["npu_usage"] = npuUsage;
-                payloadJson["timestamp"] = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count();
 
-                std::string payloadStr = payloadJson.dump();
-                // 心跳包不重要，使用 QoS 0 (最多发一次) 节省带宽
-                mqtt::message_ptr pubmsg = mqtt::make_message(topic, payloadStr);
+                payloadJson["device_id"] =
+                    clientId_;
+
+                payloadJson["deployment_area"] =
+                    deploymentArea;
+
+                payloadJson["npu_usage"] =
+                    npuUsage;
+
+                payloadJson["timestamp"] =
+                    std::chrono::duration_cast<
+                        std::chrono::milliseconds
+                    >(
+                        std::chrono::system_clock::now()
+                            .time_since_epoch()
+                    ).count();
+
+                std::string payloadStr =
+                    payloadJson.dump();
+
+                mqtt::message_ptr pubmsg =
+                    mqtt::make_message(
+                        topic,
+                        payloadStr
+                    );
+
                 pubmsg->set_qos(0);
                 pubmsg->set_retained(false);
+
                 client_->publish(pubmsg);
+
                 return true;
             }
-            catch (const mqtt::exception& exc) { return false; }
+            catch (const mqtt::exception&)
+            {
+                return false;
+            }
         }
     }
 }

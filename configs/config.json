@@ -1,4 +1,9 @@
 {
+    "device": {
+        "device_id": "OrangePi_Gateway_001",
+        "deployment_area": "客厅"
+    },
+    
     "system": {
         "log_file_path": "logs/gateway.log",
         "log_level": "INFO"

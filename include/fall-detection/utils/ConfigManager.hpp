@@ -34,6 +34,10 @@ namespace fall_detection
                 double getDouble(const std::string& key, double defaultValue = 0.0) const;
                 bool getBool(const std::string& key, bool defaultValue = false) const;
                 float getSafeZoneOverlapThreshold() const;
+
+                // 设备信息
+                std::string getDeviceId() const;
+                std::string getDeploymentArea() const;
                 
                 // —— 系统 ——
                 std::string getLogFilePath() const;

@@ -50,7 +50,7 @@ namespace fall_detection
                 bool publishAlert(const std::string& topic, const fall_detection::event::AlertEvent& alertEvent);
 
                 // 发布硬件状态（心跳）
-                bool publishStatus(const std::string& topic, int npuUsage);
+                bool publishStatus(const std::string& topic, int npuUsage, const std::string& deploymentArea);
 
                 /**
                  * @brief 查询与 MQTT 服务器的连接状态
