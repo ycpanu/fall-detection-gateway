@@ -47,6 +47,7 @@ namespace fall_detection
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, "
                 "event_id TEXT NOT NULL UNIQUE, "
                 "device_id TEXT NOT NULL, "
+                "deployment_area TEXT DEFAULT '', "
                 "event_type TEXT NOT NULL, "
                 "sources TEXT NOT NULL, "
                 "timestamp INTEGER NOT NULL, "
@@ -122,6 +123,7 @@ namespace fall_detection
                 "INSERT OR IGNORE INTO alerts ("
                 "event_id, "
                 "device_id, "
+                "deployment_area, "
                 "event_type, "
                 "sources, "
                 "timestamp, "
@@ -136,6 +138,7 @@ namespace fall_detection
 
                 + alertEvent.eventId + "', '"
                 + alertEvent.deviceId + "', '"
+                + alertEvent.deploymentArea + "', '"
                 + event::toString(alertEvent.eventType) + "', '"
                 + sourcesStr + "', "
                 + std::to_string(alertEvent.timestamp) + ", "
@@ -146,7 +149,6 @@ namespace fall_detection
                 + alertEvent.videoPath + "', '"
                 + event::toString(alertEvent.status) + "', "
                 "'pending');";
-
 
             {
                 std::lock_guard<std::mutex> lock(
@@ -189,6 +191,7 @@ namespace fall_detection
                 "id, "
                 "event_id, "
                 "device_id, "
+                "deployment_area, "
                 "event_type, "
                 "sources, "
                 "timestamp, "
@@ -248,6 +251,18 @@ namespace fall_detection
                         2
                     );
 
+                const auto* deploymentArea =
+                    sqlite3_column_text(
+                        stmt,
+                        3
+                    );
+
+                alertEvent.deploymentArea =
+                    deploymentArea
+                        ? reinterpret_cast<
+                            const char*>(deploymentArea)
+                        : "";
+
                 alertEvent.deviceId =
                     deviceId
                         ? reinterpret_cast<
@@ -261,7 +276,7 @@ namespace fall_detection
                 const auto* eventType =
                     sqlite3_column_text(
                         stmt,
-                        3
+                        4
                     );
 
                 if (eventType)
@@ -290,7 +305,7 @@ namespace fall_detection
                 const auto* sources =
                     sqlite3_column_text(
                         stmt,
-                        4
+                        5
                     );
 
                 if (sources)
@@ -321,32 +336,32 @@ namespace fall_detection
                 alertEvent.timestamp =
                     sqlite3_column_int64(
                         stmt,
-                        5
+                        6
                     );
 
                 alertEvent.personTrackId =
                     sqlite3_column_int(
                         stmt,
-                        6
+                        7
                     );
 
                 alertEvent.triggerBoxX =
                     sqlite3_column_int(
                         stmt,
-                        7
+                        8
                     );
 
                 alertEvent.triggerBoxY =
                     sqlite3_column_int(
                         stmt,
-                        8
+                        9
                     );
 
 
                 const auto* keyword =
                     sqlite3_column_text(
                         stmt,
-                        9
+                        10
                     );
 
                 alertEvent.keyword =
@@ -359,7 +374,7 @@ namespace fall_detection
                 const auto* videoPath =
                     sqlite3_column_text(
                         stmt,
-                        10
+                        11
                     );
 
                 alertEvent.videoPath =

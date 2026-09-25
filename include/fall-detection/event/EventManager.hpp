@@ -14,7 +14,7 @@ namespace fall_detection
         class EventManager
         {
         public:
-            explicit EventManager(const std::string& deviceId);
+            explicit EventManager(const std::string& deviceId, const std::string& deploymentArea);
 
             /**
              * @brief 对感知模块产生的事件进行统一处理
@@ -29,6 +29,7 @@ namespace fall_detection
 
         private:
             std::string deviceId_;
+            std::string deploymentArea_;
 
             // 防止同一毫秒产生多个事件导致 ID 重复
             std::atomic<unsigned long long> sequence_{0};

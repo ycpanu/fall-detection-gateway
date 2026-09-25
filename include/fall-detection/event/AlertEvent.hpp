@@ -42,6 +42,7 @@ namespace fall_detection
         {
             std::string eventId;
             std::string deviceId;
+            std::string deploymentArea;
             EventType eventType = EventType::FALL;
 
             // 可同时包含 vision + voice

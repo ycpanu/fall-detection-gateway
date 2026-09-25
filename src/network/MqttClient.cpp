@@ -112,6 +112,8 @@ namespace fall_detection
                         ? clientId_
                         : alertEvent.deviceId;
 
+                payloadJson["deployment_area"] = alertEvent.deploymentArea;
+
                 payloadJson["event_type"] =
                     fall_detection::event::toString(
                         alertEvent.eventType

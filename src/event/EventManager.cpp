@@ -7,7 +7,7 @@ namespace fall_detection
 {
     namespace event
     {
-        EventManager::EventManager(const std::string& deviceId) : deviceId_(deviceId)
+        EventManager::EventManager(const std::string& deviceId, const std::string& deploymentArea) : deviceId_(deviceId), deploymentArea_(deploymentArea)
         {
             LOG_INFO("[EventManager] 初始化完成，device_id={}", deviceId_);
         }
@@ -20,8 +20,8 @@ namespace fall_detection
                     std::chrono::system_clock::now().time_since_epoch()).count();
             }
 
-            // 统一设备唯一标识
             event.deviceId = deviceId_;
+            event.deploymentArea = deploymentArea_;
 
             // 尚未分配 event_id 时统一生成
             if (event.eventId.empty())

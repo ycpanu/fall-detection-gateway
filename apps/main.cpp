@@ -237,7 +237,7 @@ int main(int argc, char* argv[])
 
     auto lastVoiceTriggerTime = std::chrono::steady_clock::time_point{};
     audio::AudioCapture audioCapture;
-    event::EventManager eventManager(config.getDeviceId());
+    event::EventManager eventManager(config.getDeviceId(), config.getDeploymentArea());
 
     // 4. 初始化流水线通信基础设施
     concurrency::ThreadSafeQueue<cv::Mat> frameQueue(config.getFrameQueueSize());
