@@ -147,6 +147,9 @@ mqtt_client = None
 class LiveCommand(BaseModel):
     rtmp_url: str
 
+class AlertStatusUpdate(BaseModel):
+    status: str
+
 # 3. MQTT 回调函数 (核心重构)
 def on_connect(client, userdata, flags, rc):
     print(f"[MQTT] 已连接到云端 Broker，状态码: {rc}")
@@ -437,6 +440,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
     # 3. 统计今日报警数与近7天趋势
     today_start = int(datetime.now().replace(hour=0, minute=0, second=0).timestamp() * 1000)
     today_alerts = db.query(AlertRecord).filter(AlertRecord.server_receive_time >= today_start).count()
+    pending_alerts = (db.query(AlertRecord).filter(AlertRecord.status.in_(["NEW", "ACKNOWLEDGED"])).count())
     
     trend_data = []
     for i in range(6, -1, -1):
@@ -451,11 +455,11 @@ async def get_dashboard(db: Session = Depends(get_db)):
     return {
         "code": 200,
         "data": {
-            "online_gateways": online_count,       # 真数据！
-            "today_alerts": today_alerts,          # 真数据！
-            "pending_alerts": 0,
-            "npu_usage": f"{avg_npu} %",           # 真数据！
-            "trend_7_days": trend_data             # 真数据！
+            "online_gateways": online_count,     
+            "today_alerts": today_alerts,         
+            "pending_alerts": pending_alerts,
+            "npu_usage": f"{avg_npu} %",          
+            "trend_7_days": trend_data           
         }
     }
 
@@ -485,3 +489,54 @@ async def get_devices(db: Session = Depends(get_db)):
         })
         
     return {"code": 200, "data": res_list}
+
+@app.patch("/api/alerts/{event_id}/status")
+async def update_alert_status(
+    event_id: str,
+    request: AlertStatusUpdate,
+    db: Session = Depends(get_db)
+):
+    # 只允许这三种业务状态
+    allowed_status = {
+        "NEW",
+        "ACKNOWLEDGED",
+        "RESOLVED"
+    }
+
+    if request.status not in allowed_status:
+        return {
+            "code": 400,
+            "message": "非法报警状态"
+        }
+
+
+    alert = (
+        db.query(AlertRecord)
+        .filter(
+            AlertRecord.event_id == event_id
+        )
+        .first()
+    )
+
+
+    if not alert:
+        return {
+            "code": 404,
+            "message": "报警事件不存在"
+        }
+
+
+    alert.status = request.status
+
+    db.commit()
+    db.refresh(alert)
+
+
+    return {
+        "code": 200,
+        "message": "报警状态更新成功",
+        "data": {
+            "event_id": alert.event_id,
+            "status": alert.status
+        }
+    }
