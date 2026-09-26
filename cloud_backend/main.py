@@ -440,26 +440,56 @@ async def get_dashboard(db: Session = Depends(get_db)):
     # 3. 统计今日报警数与近7天趋势
     today_start = int(datetime.now().replace(hour=0, minute=0, second=0).timestamp() * 1000)
     today_alerts = db.query(AlertRecord).filter(AlertRecord.server_receive_time >= today_start).count()
+    today_fall_alerts = db.query(AlertRecord).filter(
+    AlertRecord.server_receive_time >= today_start, AlertRecord.event_type == "FALL").count()
+
+    today_help_alerts = db.query(AlertRecord).filter(
+        AlertRecord.server_receive_time >= today_start,
+        AlertRecord.event_type == "HELP_REQUEST"
+    ).count()
     pending_alerts = (db.query(AlertRecord).filter(AlertRecord.status.in_(["NEW", "ACKNOWLEDGED"])).count())
     
     trend_data = []
+    fall_trend_data = []
+    help_trend_data = []
+
     for i in range(6, -1, -1):
-        day_start = int((datetime.now() - timedelta(days=i)).replace(hour=0, minute=0, second=0).timestamp() * 1000)
+        day_start = int((datetime.now() - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
         day_end = day_start + 86400000
-        count = db.query(AlertRecord).filter(
+
+        total_count = db.query(AlertRecord).filter(
             AlertRecord.server_receive_time >= day_start,
             AlertRecord.server_receive_time < day_end
         ).count()
-        trend_data.append(count)
+
+        fall_count = db.query(AlertRecord).filter(
+            AlertRecord.server_receive_time >= day_start,
+            AlertRecord.server_receive_time < day_end,
+            AlertRecord.event_type == "FALL"
+        ).count()
+
+        help_count = db.query(AlertRecord).filter(
+            AlertRecord.server_receive_time >= day_start,
+            AlertRecord.server_receive_time < day_end,
+            AlertRecord.event_type == "HELP_REQUEST"
+        ).count()
+
+        trend_data.append(total_count)
+        fall_trend_data.append(fall_count)
+        help_trend_data.append(help_count)
 
     return {
         "code": 200,
         "data": {
-            "online_gateways": online_count,     
-            "today_alerts": today_alerts,         
+            "online_gateways": online_count,
+            "today_alerts": today_alerts,
+            "today_fall_alerts": today_fall_alerts,
+            "today_help_alerts": today_help_alerts,
             "pending_alerts": pending_alerts,
-            "npu_usage": f"{avg_npu} %",          
-            "trend_7_days": trend_data           
+            "npu_usage": f"{avg_npu} %",
+            "trend_7_days": trend_data,
+            "fall_trend_7_days": fall_trend_data,
+            "help_trend_7_days": help_trend_data
         }
     }
 
