@@ -39,7 +39,12 @@ class AlertRecord(Base):
     device_id = Column(
         String,
         index=True,
-        nullable=False
+        nullable=False,
+    )
+
+    deployment_area = Column(
+        String,
+        default = "未配置区域"
     )
 
     # FALL / HELP_REQUEST
@@ -248,6 +253,11 @@ def on_message(client, userdata, msg):
                     "unknown"
                 ),
 
+                deployment_area=data.get(
+                    "deployment_area",
+                    "未配置区域"
+                ),
+
                 event_type=data.get(
                     "event_type",
                     "UNKNOWN"
@@ -373,6 +383,9 @@ async def get_alerts(
 
             "device_id":
                 alert.device_id,
+
+            "deployment_area":
+                alert.deployment_area,
 
             "event_type":
                 alert.event_type,
