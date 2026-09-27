@@ -213,7 +213,7 @@ namespace fall_detection
                 // 利用 curl 后台上传视频到云端
                 std::string serverUrl = utils::ConfigManager::getInstance().getString("network.api_base_url", "http://10.48.212.22:8000");
                 // 构建上传命令：curl -s -X POST -F "file=@videos/fall_xxx.mp4" http://ip:8000/api/upload/video
-                std::string uploadCmd = "curl -s -X POST -F \"file=@" + task.outputPath + "\" " + serverUrl + "/api/upload/video";
+                std::string uploadCmd = "curl -sS --fail -X POST -F \"file=@" + task.outputPath + "\" " + serverUrl + "/api/upload/video";
                 
                 LOG_INFO("正在后台上传短视频到云端: {}", task.outputPath);
                 int uploadRet = std::system(uploadCmd.c_str());

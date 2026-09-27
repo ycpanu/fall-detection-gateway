@@ -1,7 +1,10 @@
 import json
 import time
+import os
+import shutil
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, UploadFile, File, Request
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import paho.mqtt.client as mqtt
@@ -9,9 +12,7 @@ from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from datetime import datetime, timedelta
 
-# ==========================================
 # 1. 数据库配置 (SQLite)
-# ==========================================
 SQLALCHEMY_DATABASE_URL = "sqlite:///./cloud_alerts.db"
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -348,6 +349,10 @@ async def lifespan(app: FastAPI):
         mqtt_client.disconnect()
 
 app = FastAPI(title="摔倒检测云端管理系统", lifespan=lifespan)
+VIDEO_DIR = "uploaded_videos"
+os.makedirs(VIDEO_DIR, exist_ok=True)
+
+app.mount("/videos", StaticFiles(directory=VIDEO_DIR), name="videos")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/api/alerts")
@@ -569,4 +574,47 @@ async def update_alert_status(
             "event_id": alert.event_id,
             "status": alert.status
         }
+    }
+
+@app.post("/api/upload/video")
+async def upload_video(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    filename = os.path.basename(file.filename)
+    save_path = os.path.join(VIDEO_DIR, filename)
+
+    with open(save_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # 文件名格式：fall_<event_id>.mp4
+    event_id = ""
+
+    if filename.startswith("fall_") and filename.endswith(".mp4"):
+        event_id = filename[5:-4]
+
+    if not event_id:
+        return {
+            "code": 400,
+            "message": "无法从视频文件名解析 event_id"
+        }
+
+    alert = db.query(AlertRecord).filter(AlertRecord.event_id == event_id).first()
+
+    if not alert:
+        return {
+            "code": 404,
+            "message": f"未找到对应报警事件：{event_id}"
+        }
+
+    base_url = str(request.base_url).rstrip("/")
+    video_url = f"{base_url}/videos/{filename}"
+
+    alert.video_url = video_url
+    db.commit()
+
+    print(f"[VIDEO] 视频已关联报警：event_id={event_id}, url={video_url}")
+
+    return {
+        "code": 200,
+        "message": "视频上传成功",
+        "event_id": event_id,
+        "video_url": video_url
     }
