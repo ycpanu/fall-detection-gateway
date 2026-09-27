@@ -102,31 +102,15 @@ class AlertRecord(Base):
 class DeviceRecord(Base):
     __tablename__ = "devices"
 
-    device_id = Column(
-        String,
-        primary_key=True,
-        index=True
-    )
+    device_id = Column(String, primary_key=True, index=True)
+    deployment_area = Column(String, default="未配置区域")
+    model_version = Column(String, default="YOLOv8n-Pose.rknn")
 
-    deployment_area = Column(
-        String,
-        default="未配置区域"
-    )
+    cpu_usage = Column(Integer, default=-1)
+    memory_usage = Column(Integer, default=-1)
+    storage_usage = Column(Integer, default=-1)
 
-    model_version = Column(
-        String,
-        default="YOLOv8n-Pose.rknn"
-    )
-
-    npu_usage = Column(
-        Integer,
-        default=0
-    )
-
-    last_online_time = Column(
-        Integer,
-        default=0
-    )
+    last_online_time = Column(Integer, default=0)
 
 Base.metadata.create_all(bind=engine)
 
@@ -166,40 +150,28 @@ def on_message(client, userdata, msg):
         
         # 【路由 A】：处理设备定时上报的心跳与 NPU 状态
         if topic.startswith("fall_detection/status/"):
-            print(f"[MQTT] 收到设备心跳与状态: {payload}")
-            dev_id = data.get("device_id", "unknown")
-            deployment_area = data.get(
-                "deployment_area",
-                "未配置区域"
-            )
+            print(f"[MQTT] 收到设备状态心跳: {payload}")
 
-            dev = (
-                db.query(DeviceRecord)
-                .filter(
-                    DeviceRecord.device_id == dev_id
-                )
-                .first()
-            )
+            dev_id = data.get("device_id", "unknown")
+
+            dev = db.query(DeviceRecord).filter(
+                DeviceRecord.device_id == dev_id
+            ).first()
 
             if not dev:
-                dev = DeviceRecord(
-                    device_id=dev_id
-                )
-
+                dev = DeviceRecord(device_id=dev_id)
                 db.add(dev)
 
-
-            # 每次心跳都同步部署区域
-            dev.deployment_area = deployment_area
-
-            dev.npu_usage = data.get(
-                "npu_usage",
-                0
+            dev.deployment_area = data.get(
+                "deployment_area",
+                dev.deployment_area or "未配置区域"
             )
 
-            dev.last_online_time = int(
-                time.time() * 1000
-            )
+            dev.cpu_usage = data.get("cpu_usage", -1)
+            dev.memory_usage = data.get("memory_usage", -1)
+            dev.storage_usage = data.get("storage_usage", -1)
+
+            dev.last_online_time = int(time.time() * 1000)
 
             db.commit()
             
@@ -210,22 +182,13 @@ def on_message(client, userdata, msg):
                 f"{payload}"
             )
 
-            event_id = data.get(
-                "event_id",
-                ""
-            )
+            event_id = data.get("event_id", "")
 
             if not event_id:
-                print(
-                    "[MQTT] 报警数据缺少 event_id，忽略"
-                )
+                print("[MQTT] 报警数据缺少 event_id，忽略")
                 return
 
-
-            # =====================================
             # event_id 幂等检查
-            # =====================================
-
             existing_alert = (
                 db.query(AlertRecord)
                 .filter(
@@ -248,6 +211,78 @@ def on_message(client, userdata, msg):
                 {}
             )
 
+            event_id = data.get("event_id", "")
+            event_type = data.get("event_type", "UNKNOWN")
+            sources = data.get("sources", [])
+            event_data = data.get("data", {})
+            timestamp = data.get("timestamp", 0)
+
+            fusion_window_ms = 10000
+
+            recent_alert = db.query(AlertRecord).filter(
+                AlertRecord.device_id == data.get("device_id", "unknown"),
+                AlertRecord.timestamp >= timestamp - fusion_window_ms,
+                AlertRecord.timestamp <= timestamp + fusion_window_ms
+            ).order_by(AlertRecord.timestamp.desc()).first()
+
+            should_fuse = False
+
+            if recent_alert:
+                try:
+                    old_sources = json.loads(recent_alert.sources or "[]")
+                except Exception:
+                    old_sources = []
+
+                incoming_has_vision = "VISION" in sources
+                incoming_has_voice = "VOICE" in sources
+                old_has_vision = "VISION" in old_sources
+                old_has_voice = "VOICE" in old_sources
+
+                should_fuse = (
+                    (incoming_has_vision and old_has_voice) or
+                    (incoming_has_voice and old_has_vision)
+                )
+
+            if should_fuse:
+                merged_sources = list(dict.fromkeys(old_sources + sources))
+
+                recent_alert.sources = json.dumps(
+                    merged_sources,
+                    ensure_ascii=False
+                )
+
+                # 只要其中包含视觉跌倒，最终事件按 FALL 记录
+                if event_type == "FALL" or recent_alert.event_type == "FALL":
+                    recent_alert.event_type = "FALL"
+
+                keyword = event_data.get("keyword", "")
+                if keyword:
+                    recent_alert.keyword = keyword
+
+                person_track_id = event_data.get("person_track_id", -1)
+                if person_track_id >= 0:
+                    recent_alert.person_track_id = person_track_id
+
+                trigger_x = event_data.get("trigger_x", 0)
+                trigger_y = event_data.get("trigger_y", 0)
+
+                if trigger_x != 0 or trigger_y != 0:
+                    recent_alert.trigger_x = trigger_x
+                    recent_alert.trigger_y = trigger_y
+
+                deployment_area = data.get("deployment_area", "")
+                if deployment_area:
+                    recent_alert.deployment_area = deployment_area
+
+                db.commit()
+
+                print(
+                    f"[FUSION] 多模态事件融合成功："
+                    f"event_id={recent_alert.event_id}, "
+                    f"sources={merged_sources}"
+                )
+
+                return
 
             new_alert = AlertRecord(
                 event_id=event_id,
@@ -438,9 +473,24 @@ async def get_dashboard(db: Session = Depends(get_db)):
     current_time = int(time.time() * 1000)
     online_devices = db.query(DeviceRecord).filter(current_time - DeviceRecord.last_online_time <= 30000).all()
     online_count = len(online_devices)
-    
-    # 2. 动态计算真实 NPU 平均利用率
-    avg_npu = int(sum(d.npu_usage for d in online_devices) / online_count) if online_count > 0 else 0
+
+    current_device = None
+
+    if online_devices:
+        current_device = max(
+            online_devices,
+            key=lambda d: d.last_online_time
+        )
+
+    memory_usage = (
+        current_device.memory_usage
+        if current_device else -1
+    )
+
+    storage_usage = (
+        current_device.storage_usage
+        if current_device else -1
+    )
     
     # 3. 统计今日报警数与近7天趋势
     today_start = int(datetime.now().replace(hour=0, minute=0, second=0).timestamp() * 1000)
@@ -488,13 +538,10 @@ async def get_dashboard(db: Session = Depends(get_db)):
         "data": {
             "online_gateways": online_count,
             "today_alerts": today_alerts,
-            "today_fall_alerts": today_fall_alerts,
-            "today_help_alerts": today_help_alerts,
             "pending_alerts": pending_alerts,
-            "npu_usage": f"{avg_npu} %",
-            "trend_7_days": trend_data,
-            "fall_trend_7_days": fall_trend_data,
-            "help_trend_7_days": help_trend_data
+            "memory_usage": memory_usage,
+            "storage_usage": storage_usage,
+            "trend_7_days": trend_data
         }
     }
 
@@ -508,19 +555,13 @@ async def get_devices(db: Session = Depends(get_db)):
         # 判断是否在 30 秒内有过心跳
         is_online = (current_time - d.last_online_time <= 30000)
         res_list.append({
-            "device_id":
-                d.device_id,
-
-            "deployment_area":
-                d.deployment_area,
-
-            "status":
-                "🟢 在线"
-                if is_online
-                else "🔴 离线",
-
-            "model_version":
-                d.model_version
+            "device_id": d.device_id,
+            "deployment_area": d.deployment_area,
+            "status": "🟢在线" if is_online else "🔴离线",
+            "model_version": d.model_version,
+            "cpu_usage": d.cpu_usage,
+            "memory_usage": d.memory_usage,
+            "storage_usage": d.storage_usage
         })
         
     return {"code": 200, "data": res_list}

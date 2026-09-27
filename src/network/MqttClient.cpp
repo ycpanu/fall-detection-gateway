@@ -266,43 +266,28 @@ namespace fall_detection
         }
 
         // 用于发送低负载的心跳包
-        bool MqttClient::publishStatus(const std::string& topic,int npuUsage,
-            const std::string& deploymentArea)
+        bool MqttClient::publishStatus(const std::string& topic, int cpuUsage, int memoryUsage,
+            int storageUsage, const std::string& deploymentArea)
         {
-            if (!isConnected())
-            {
-                return false;
-            }
+            if (!isConnected()) return false;
 
             try
             {
                 json payloadJson;
 
-                payloadJson["device_id"] =
-                    clientId_;
-
-                payloadJson["deployment_area"] =
-                    deploymentArea;
-
-                payloadJson["npu_usage"] =
-                    npuUsage;
+                payloadJson["device_id"] = clientId_;
+                payloadJson["deployment_area"] = deploymentArea;
+                payloadJson["cpu_usage"] = cpuUsage;
+                payloadJson["memory_usage"] = memoryUsage;
+                payloadJson["storage_usage"] = storageUsage;
 
                 payloadJson["timestamp"] =
-                    std::chrono::duration_cast<
-                        std::chrono::milliseconds
-                    >(
-                        std::chrono::system_clock::now()
-                            .time_since_epoch()
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch()
                     ).count();
 
-                std::string payloadStr =
-                    payloadJson.dump();
-
                 mqtt::message_ptr pubmsg =
-                    mqtt::make_message(
-                        topic,
-                        payloadStr
-                    );
+                    mqtt::make_message(topic, payloadJson.dump());
 
                 pubmsg->set_qos(0);
                 pubmsg->set_retained(false);
@@ -311,8 +296,9 @@ namespace fall_detection
 
                 return true;
             }
-            catch (const mqtt::exception&)
+            catch (const mqtt::exception& exc)
             {
+                LOG_ERROR("设备状态上报失败：{}", exc.what());
                 return false;
             }
         }

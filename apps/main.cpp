@@ -28,6 +28,7 @@
 #include "fall-detection/event/EventManager.hpp"
 #include "fall-detection/audio/AudioCapture.hpp"
 #include "fall-detection/audio/KeywordSpotter.hpp"
+#include "fall-detection/utils/SystemMonitor.hpp"
 
 // #include <syslog.h>
 
@@ -452,43 +453,37 @@ int main(int argc, char* argv[])
     });
 
     // 系统硬件心跳守护进程
-    // 负责 10 秒向云端发送存活证明，并读取 NPU 负载信息
+    // 负责 10 秒向云端发送存活证明
+    utils::SystemMonitor systemMonitor;
     std::thread heartbeatThread([&]()
     {
         while (g_running)
         {
             if (mqttClient.isConnected())
             {
-                int npuUsage = 0;
-                // 尝试读取 Linux 底层的 NPU 驱动暴露文件
-                std::ifstream file("/sys/kernel/debug/rknpu/load");
-                std::string line;
-                if (file.is_open() && std::getline(file, line))
-                {
-                    // 解析驱动输出
-                    size_t pos = line.find("Core0: ");
-                    if (pos != std::string::npos)
-                    {
-                        try 
-                        {
-                            npuUsage = std::stoi(line.substr(pos + 7, 2));
-
-                        }
-                        catch(...) {}
-                    }
-                }
-                else
-                {
-                    // 容灾随机生成真实波动值，防止程序找不到文件报错
-                    npuUsage = 50 + (rand() % 25);
-                }
+                int cpuUsage = systemMonitor.getCpuUsage();
+                int memoryUsage = systemMonitor.getMemoryUsage();
+                int storageUsage = systemMonitor.getStorageUsage("/");
 
                 std::string statusTopic = "fall_detection/status/" + config.getDeviceId();
-                mqttClient.publishStatus(statusTopic, npuUsage, config.getDeploymentArea());
-                LOG_TRACE("已向云端发送设备存活心跳，当前系统 NPU 负载: {}", npuUsage);
+
+                mqttClient.publishStatus(
+                    statusTopic,
+                    cpuUsage,
+                    memoryUsage,
+                    storageUsage,
+                    config.getDeploymentArea()
+                );
+
+                LOG_INFO(
+                    "设备状态心跳：CPU={}%，内存={}%，存储={}%",
+                    cpuUsage,
+                    memoryUsage,
+                    storageUsage
+                );
             }
-            // 为了保证系统收到 Ctrl+C 能立即退出，把 10 秒的休眠切成 100 份
-            for (int i = 0; i < 100 && g_running; i++)
+
+            for (int i = 0; i < 100 && g_running; ++i)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
