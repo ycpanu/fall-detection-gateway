@@ -397,10 +397,13 @@ int main(int argc, char* argv[])
             {
                 if (event.eventType == fall_detection::event::EventType::FALL)
                 {
-                    LOG_WARN(
-                        "收到跌倒报警：event_id={}",
-                        event.eventId
-                    );
+                    int fps = config.getVideoSaveFps();
+
+                    event.videoPath = config.getVideoOutputDir() + "/fall_" + event.eventId + ".mp4";
+
+                    videoCacher.saveVideoAsync(event.videoPath, fps, fps * 5);
+
+                    LOG_INFO("已启动跌倒事件视频记录：前置缓存 + 后置5秒，event_id={}", event.eventId);
                 }
                 else if (
                     event.eventType ==

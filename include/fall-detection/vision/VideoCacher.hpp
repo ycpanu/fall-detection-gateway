@@ -7,6 +7,7 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <vector>
 #include <condition_variable>
 
 namespace fall_detection
@@ -21,6 +22,14 @@ namespace fall_detection
             int fps;
         };
 
+        struct PendingVideoRecord
+        {
+            std::deque<cv::Mat> frames;
+            std::string outputPath;
+            int fps = 30;
+            int remainingPostFrames = 0;
+        };
+
         class VideoCacher
         {
             public:
@@ -28,7 +37,7 @@ namespace fall_detection
                 ~VideoCacher();
 
                 void pushFrame(const cv::Mat& frame);
-                void saveVideoAsync(const std::string& outputPath, int fps = 30);
+                void saveVideoAsync(const std::string& outputPath, int fps = 30, int postFrames = 0);
             
             private:
                 // 常驻后台编码工作线程
@@ -45,6 +54,7 @@ namespace fall_detection
                 std::condition_variable cv_;
                 std::thread workerThread_;
                 std::atomic<bool> isRunning_{false};
+                std::vector<PendingVideoRecord> pendingRecords_;
         };
     }
 }

@@ -1,5 +1,7 @@
 #include <opencv2/videoio.hpp>
 #include <cstdlib>
+#include <cstdio>
+#include <filesystem>
 
 #include "fall-detection/vision/VideoCacher.hpp"
 #include "fall-detection/utils/SysLogger.hpp"
@@ -29,37 +31,86 @@ namespace fall_detection
 
         void VideoCacher::pushFrame(const cv::Mat& frame)
         {
-            std::lock_guard<std::mutex> lock(bufferMtx_);
-            buffer_.push_back(frame.clone());
+            std::vector<VideoTask> completedTasks;
 
-            if (buffer_.size() > maxFrame_)
             {
-                buffer_.pop_front();
+                std::lock_guard<std::mutex> lock(bufferMtx_);
+
+                cv::Mat cachedFrame = frame.clone();
+                buffer_.push_back(cachedFrame);
+
+                if (buffer_.size() > maxFrame_)
+                    buffer_.pop_front();
+
+                for (auto it = pendingRecords_.begin(); it != pendingRecords_.end();)
+                {
+                    it->frames.push_back(cachedFrame);
+                    --it->remainingPostFrames;
+
+                    if (it->remainingPostFrames <= 0)
+                    {
+                        completedTasks.push_back({
+                            std::move(it->frames),
+                            it->outputPath,
+                            it->fps
+                        });
+
+                        it = pendingRecords_.erase(it);
+                    }
+                    else
+                    {
+                        ++it;
+                    }
+                }
+            }
+
+            if (!completedTasks.empty())
+            {
+                {
+                    std::lock_guard<std::mutex> lock(queueMtx_);
+
+                    for (auto& task : completedTasks)
+                        taskQueue_.push(std::move(task));
+                }
+
+                cv_.notify_one();
             }
         }
 
-        void VideoCacher::saveVideoAsync(const std::string& outputPath, int fps)
+        void VideoCacher::saveVideoAsync(const std::string& outputPath, int fps, int postFrames)
         {
-            // 1. 极速拷贝快照，最小化主存锁占用时间
             std::deque<cv::Mat> snapshot;
+
             {
                 std::lock_guard<std::mutex> lock(bufferMtx_);
                 snapshot = buffer_;
+
+                if (snapshot.empty())
+                {
+                    LOG_WARN("视频缓存区为空，无法生成事件视频！");
+                    return;
+                }
+
+                if (postFrames > 0)
+                {
+                    PendingVideoRecord record;
+                    record.frames = std::move(snapshot);
+                    record.outputPath = outputPath;
+                    record.fps = fps;
+                    record.remainingPostFrames = postFrames;
+
+                    pendingRecords_.push_back(std::move(record));
+
+                    LOG_INFO("已锁定报警前 {} 帧，继续采集报警后 {} 帧", buffer_.size(), postFrames);
+                    return;
+                }
             }
 
-            if (snapshot.empty())
-            {
-                LOG_WARN("视频缓存区为空，无法生成短视频！");
-                return;
-            }
-
-            LOG_INFO("已成功截取摔倒前 {} 帧画面，投递至后台编码队列...", snapshot.size());
-
-            // 2. 将快照推入编码任务队列并唤醒消费者
             {
                 std::lock_guard<std::mutex> lock(queueMtx_);
                 taskQueue_.push({std::move(snapshot), outputPath, fps});
             }
+
             cv_.notify_one();
         }
 
@@ -90,38 +141,74 @@ namespace fall_detection
                 height -= height % 2;
                 cv::Size size(width, height);
 
-                cv::VideoWriter writer;
-                writer.open(task.outputPath, cv::VideoWriter::fourcc('a', 'v', 'c', '1'), task.fps, size);
-                
-                if (!writer.isOpened())
+                std::filesystem::path outputPath(task.outputPath);
+
+                if (outputPath.has_parent_path())
                 {
-                    LOG_WARN("H.264 编码器不可用，回退到 MPEG-4(mp4v)...");
-                    writer.release();
-                    writer.open(task.outputPath, cv::VideoWriter::fourcc('m', 'p', '4', 'v'), task.fps, size);
+                    std::filesystem::create_directories(outputPath.parent_path());
                 }
 
-                if (!writer.isOpened())
+                std::string command =
+                    "ffmpeg -y -loglevel error "
+                    "-f rawvideo "
+                    "-pix_fmt bgr24 "
+                    "-s " + std::to_string(width) + "x" + std::to_string(height) + " "
+                    "-r " + std::to_string(task.fps) + " "
+                    "-i - "
+                    "-an "
+                    "-vf format=nv12 "
+                    "-c:v h264_rkmpp "
+                    "-movflags +faststart "
+                    "\"" + task.outputPath + "\"";
+
+                FILE* pipe = popen(command.c_str(), "w");
+
+                if (!pipe)
                 {
-                    LOG_ERROR("后台视频编码器打开失败，短视频 {} 生成中断！", task.outputPath);
+                    LOG_ERROR("无法启动 FFmpeg 硬件编码器：{}", task.outputPath);
                     continue;
                 }
 
+                bool writeOk = true;
+
                 for (const auto& frame : task.frames)
                 {
-                    if (frame.cols == width && frame.rows == height)
-                    {
-                        writer.write(frame);
-                    }
+                    cv::Mat outputFrame;
+
+                    if (frame.cols != width || frame.rows != height)
+                        cv::resize(frame, outputFrame, size);
                     else
+                        outputFrame = frame;
+
+                    if (!outputFrame.isContinuous())
+                        outputFrame = outputFrame.clone();
+
+                    size_t frameBytes = outputFrame.total() * outputFrame.elemSize();
+
+                    size_t written = fwrite(
+                        outputFrame.data,
+                        1,
+                        frameBytes,
+                        pipe
+                    );
+
+                    if (written != frameBytes)
                     {
-                        cv::Mat resized;
-                        cv::resize(frame, resized, size);
-                        writer.write(resized);
+                        LOG_ERROR("向 FFmpeg 写入视频帧失败");
+                        writeOk = false;
+                        break;
                     }
                 }
 
-                writer.release();
-                LOG_WARN("现场短视频已成功异步落盘：{}", task.outputPath);
+                int ffmpegRet = pclose(pipe);
+
+                if (!writeOk || ffmpegRet != 0)
+                {
+                    LOG_ERROR("FFmpeg 硬件编码失败：{}", task.outputPath);
+                    continue;
+                }
+
+                LOG_INFO("事件视频硬件编码完成：{}", task.outputPath);
 
                 // 利用 curl 后台上传视频到云端
                 std::string serverUrl = utils::ConfigManager::getInstance().getString("network.api_base_url", "http://10.48.212.22:8000");
@@ -129,8 +216,8 @@ namespace fall_detection
                 std::string uploadCmd = "curl -s -X POST -F \"file=@" + task.outputPath + "\" " + serverUrl + "/api/upload/video";
                 
                 LOG_INFO("正在后台上传短视频到云端: {}", task.outputPath);
-                int ret = std::system(uploadCmd.c_str());
-                if (ret == 0)
+                int uploadRet = std::system(uploadCmd.c_str());
+                if (uploadRet == 0)
                 {
                     LOG_INFO("现场短视频上传云端成功！");
                 }
