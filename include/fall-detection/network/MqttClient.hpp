@@ -4,6 +4,9 @@
 #include <memory>
 #include <functional>
 #include <mqtt/async_client.h>
+#include <vector>
+#include <utility>
+#include <mutex>
 #include "fall-detection/event/AlertEvent.hpp"
 
 namespace fall_detection
@@ -70,13 +73,14 @@ namespace fall_detection
                 // 订阅指定主题
                 bool subscribe(const std::string& topic, int qos = 1);
 
-
             protected:
                 // 重写 Paho MQTT 的底层消息到达回调
                 void message_arrived(mqtt::const_message_ptr msg) override;
 
                 // 重写连接断开回调
                 void connection_lost(const std::string& cause) override;
+
+                void connected(const std::string& cause) override;
             
             private:
                 std::string serverAddress_;
@@ -88,6 +92,9 @@ namespace fall_detection
 
                 // 保存外部传入的回调函数
                 MessageCallback messageCallback_;
+
+                std::vector<std::pair<std::string, int>> subscriptions_;
+                std::mutex subscriptionMtx_;
         };
     }
 }
