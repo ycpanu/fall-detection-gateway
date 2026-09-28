@@ -95,32 +95,96 @@ namespace fall_detection
                 return false;
             }
 
+            // SQL 字符串转义，避免关键词、区域名等包含单引号时导致 SQL 语句失败
+            auto escapeSql = [](const std::string& value)
+            {
+                std::string result;
+                result.reserve(value.size());
 
-            // sources 转成字符串，例如：
+                for (char ch : value)
+                {
+                    if (ch == '\'')
+                    {
+                        result += "''";
+                    }
+                    else
+                    {
+                        result += ch;
+                    }
+                }
+
+                return result;
+            };
+
+            // ==========================================
+            // 1. 报警来源序列化
+            //
             // VISION
             // VOICE
             // VISION,VOICE
-
+            // ==========================================
             std::string sourcesStr;
 
-            for (std::size_t i = 0;
-                i < alertEvent.source.size();
-                ++i)
+            for (std::size_t i = 0; i < alertEvent.source.size(); ++i)
             {
                 if (i > 0)
                 {
                     sourcesStr += ",";
                 }
 
-                sourcesStr +=
-                    event::toString(
-                        alertEvent.source[i]
-                    );
+                sourcesStr += event::toString(alertEvent.source[i]);
             }
 
+            // ==========================================
+            // 2. 枚举转换为数据库字符串
+            // ==========================================
+            std::string eventTypeStr =
+                event::toString(alertEvent.eventType);
 
+            std::string eventStatusStr =
+                event::toString(alertEvent.status);
+
+            // ==========================================
+            // 3. 对字符串字段进行 SQL 转义
+            // ==========================================
+            std::string eventId =
+                escapeSql(alertEvent.eventId);
+
+            std::string deviceId =
+                escapeSql(alertEvent.deviceId);
+
+            std::string deploymentArea =
+                escapeSql(alertEvent.deploymentArea);
+
+            std::string keyword =
+                escapeSql(alertEvent.keyword);
+
+            std::string videoPath =
+                escapeSql(alertEvent.videoPath);
+
+            sourcesStr =
+                escapeSql(sourcesStr);
+
+            eventTypeStr =
+                escapeSql(eventTypeStr);
+
+            eventStatusStr =
+                escapeSql(eventStatusStr);
+
+            // ==========================================
+            // 4. INSERT + UPSERT
+            //
+            // 第一次 event_id：
+            //      INSERT
+            //
+            // 相同 event_id 再次到达：
+            //      UPDATE 融合信息
+            //
+            // event_type 和 timestamp 不更新，
+            // 始终保留第一次报警的类型和时间。
+            // ==========================================
             std::string insertSQL =
-                "INSERT OR IGNORE INTO alerts ("
+                "INSERT INTO alerts ("
                 "event_id, "
                 "device_id, "
                 "deployment_area, "
@@ -134,45 +198,83 @@ namespace fall_detection
                 "video_path, "
                 "event_status, "
                 "upload_status"
-                ") VALUES ('"
+                ") VALUES ('" +
 
-                + alertEvent.eventId + "', '"
-                + alertEvent.deviceId + "', '"
-                + alertEvent.deploymentArea + "', '"
-                + event::toString(alertEvent.eventType) + "', '"
-                + sourcesStr + "', "
-                + std::to_string(alertEvent.timestamp) + ", "
-                + std::to_string(alertEvent.personTrackId) + ", "
-                + std::to_string(alertEvent.triggerBoxX) + ", "
-                + std::to_string(alertEvent.triggerBoxY) + ", '"
-                + alertEvent.keyword + "', '"
-                + alertEvent.videoPath + "', '"
-                + event::toString(alertEvent.status) + "', "
-                "'pending');";
+                eventId + "', '" +
+                deviceId + "', '" +
+                deploymentArea + "', '" +
+                eventTypeStr + "', '" +
+                sourcesStr + "', " +
 
+                std::to_string(alertEvent.timestamp) + ", " +
+                std::to_string(alertEvent.personTrackId) + ", " +
+                std::to_string(alertEvent.triggerBoxX) + ", " +
+                std::to_string(alertEvent.triggerBoxY) + ", '" +
+
+                keyword + "', '" +
+                videoPath + "', '" +
+                eventStatusStr + "', 'PENDING') "
+
+                "ON CONFLICT(event_id) DO UPDATE SET "
+
+                // 更新多模态来源
+                "sources = excluded.sources, "
+
+                // 如果后到的是视觉事件，则补充人员轨迹信息
+                "person_track_id = CASE "
+                "WHEN excluded.person_track_id >= 0 "
+                "THEN excluded.person_track_id "
+                "ELSE alerts.person_track_id "
+                "END, "
+
+                // 如果存在视觉信息，则更新触发位置
+                "trigger_x = CASE "
+                "WHEN excluded.person_track_id >= 0 "
+                "THEN excluded.trigger_x "
+                "ELSE alerts.trigger_x "
+                "END, "
+
+                "trigger_y = CASE "
+                "WHEN excluded.person_track_id >= 0 "
+                "THEN excluded.trigger_y "
+                "ELSE alerts.trigger_y "
+                "END, "
+
+                // 如果后到的是语音事件，则补充关键词
+                "keyword = CASE "
+                "WHEN excluded.keyword <> '' "
+                "THEN excluded.keyword "
+                "ELSE alerts.keyword "
+                "END, "
+
+                // 如果后续视觉事件生成了录像，则补充视频路径
+                "video_path = CASE "
+                "WHEN excluded.video_path <> '' "
+                "THEN excluded.video_path "
+                "ELSE alerts.video_path "
+                "END, "
+
+                // 部署区域以当前配置为准
+                "deployment_area = excluded.deployment_area, "
+
+                // 数据发生更新，需要重新同步云端
+                "upload_status = 'PENDING';";
+
+            // 5. 放入 SQLite 后台写入队列
             {
-                std::lock_guard<std::mutex> lock(
-                    queueMtx_
-                );
-
-                sqlQueue_.push(
-                    std::move(insertSQL)
-                );
+                std::lock_guard<std::mutex> lock(queueMtx_);
+                sqlQueue_.push(std::move(insertSQL));
             }
-
 
             cv_.notify_one();
 
-
             LOG_WARN(
                 "报警事件已进入本地持久化队列："
-                "event_id={}, type={}",
+                "event_id={}, type={}, sources={}",
                 alertEvent.eventId,
-                event::toString(
-                    alertEvent.eventType
-                )
+                event::toString(alertEvent.eventType),
+                sourcesStr
             );
-
 
             return true;
         }
@@ -213,187 +315,93 @@ namespace fall_detection
                     &stmt,
                     nullptr) != SQLITE_OK)
             {
-                LOG_ERROR(
-                    "查询待上传报警记录失败：{}",
-                    sqlite3_errmsg(db_)
-                );
+                LOG_ERROR("查询待上传报警记录失败：{}",sqlite3_errmsg(db_));
 
                 return pendingAlerts;
             }
 
-            while (sqlite3_step(stmt) ==
-                SQLITE_ROW)
+            while (sqlite3_step(stmt) == SQLITE_ROW)
             {
                 DBAlertEvent alertEvent;
 
-
-                alertEvent.dbId =
-                    sqlite3_column_int(
-                        stmt,
-                        0
-                    );
+                alertEvent.dbId = sqlite3_column_int(stmt, 0);
 
                 const auto* eventId =
-                    sqlite3_column_text(
-                        stmt,
-                        1
-                    );
+                    sqlite3_column_text(stmt, 1);
 
-                alertEvent.eventId =
-                    eventId
-                        ? reinterpret_cast<
-                            const char*>(eventId)
-                        : "";
+                alertEvent.eventId = eventId ? reinterpret_cast<const char*>(eventId): "";
 
-                const auto* deviceId =
-                    sqlite3_column_text(
-                        stmt,
-                        2
-                    );
+                const auto* deviceId = sqlite3_column_text(stmt, 2);
 
-                const auto* deploymentArea =
-                    sqlite3_column_text(
-                        stmt,
-                        3
-                    );
+                const auto* deploymentArea = sqlite3_column_text(stmt, 3);
 
-                alertEvent.deploymentArea =
-                    deploymentArea
-                        ? reinterpret_cast<
-                            const char*>(deploymentArea)
-                        : "";
+                alertEvent.deploymentArea = deploymentArea ? reinterpret_cast<const char*>(deploymentArea): "";
 
-                alertEvent.deviceId =
-                    deviceId
-                        ? reinterpret_cast<
-                            const char*>(deviceId)
-                        : "";
-
+                alertEvent.deviceId = deviceId ? reinterpret_cast<const char*>(deviceId) : "";
 
                 // event_type
                 std::string eventTypeStr;
 
-                const auto* eventType =
-                    sqlite3_column_text(
-                        stmt,
-                        4
-                    );
+                const auto* eventType = sqlite3_column_text(stmt, 4);
 
                 if (eventType)
                 {
-                    eventTypeStr =
-                        reinterpret_cast<
-                            const char*>(eventType);
+                    eventTypeStr = reinterpret_cast<const char*>(eventType);
                 }
-
 
                 if (eventTypeStr == "HELP_REQUEST")
                 {
-                    alertEvent.eventType =
-                        event::EventType::HELP_REQUEST;
+                    alertEvent.eventType = event::EventType::HELP_REQUEST;
                 }
                 else
                 {
-                    alertEvent.eventType =
-                        event::EventType::FALL;
+                    alertEvent.eventType = event::EventType::FALL;
                 }
-
 
                 // sources
                 std::string sourcesStr;
 
-                const auto* sources =
-                    sqlite3_column_text(
-                        stmt,
-                        5
-                    );
+                const auto* sources = sqlite3_column_text(stmt, 5);
 
                 if (sources)
                 {
-                    sourcesStr =
-                        reinterpret_cast<
-                            const char*>(sources);
+                    sourcesStr = reinterpret_cast<const char*>(sources);
                 }
 
 
-                if (sourcesStr.find("VISION") !=
-                    std::string::npos)
+                if (sourcesStr.find("VISION") != std::string::npos)
                 {
-                    alertEvent.source.push_back(
-                        event::EventSource::VISION
-                    );
+                    alertEvent.source.push_back(event::EventSource::VISION);
                 }
 
-                if (sourcesStr.find("VOICE") !=
-                    std::string::npos)
+                if (sourcesStr.find("VOICE") != std::string::npos)
                 {
-                    alertEvent.source.push_back(
-                        event::EventSource::VOICE
-                    );
+                    alertEvent.source.push_back(event::EventSource::VOICE);
                 }
 
 
-                alertEvent.timestamp =
-                    sqlite3_column_int64(
-                        stmt,
-                        6
-                    );
+                alertEvent.timestamp = sqlite3_column_int64(stmt, 6);
 
-                alertEvent.personTrackId =
-                    sqlite3_column_int(
-                        stmt,
-                        7
-                    );
+                alertEvent.personTrackId = sqlite3_column_int(stmt, 7);
 
-                alertEvent.triggerBoxX =
-                    sqlite3_column_int(
-                        stmt,
-                        8
-                    );
+                alertEvent.triggerBoxX = sqlite3_column_int(stmt, 8);
 
-                alertEvent.triggerBoxY =
-                    sqlite3_column_int(
-                        stmt,
-                        9
-                    );
+                alertEvent.triggerBoxY = sqlite3_column_int(stmt, 9);
 
+                const auto* keyword = sqlite3_column_text(stmt, 10);
 
-                const auto* keyword =
-                    sqlite3_column_text(
-                        stmt,
-                        10
-                    );
+                alertEvent.keyword = keyword ? reinterpret_cast<const char*>(keyword) : "";
 
-                alertEvent.keyword =
-                    keyword
-                        ? reinterpret_cast<
-                            const char*>(keyword)
-                        : "";
+                const auto* videoPath = sqlite3_column_text(stmt, 11);
 
-
-                const auto* videoPath =
-                    sqlite3_column_text(
-                        stmt,
-                        11
-                    );
-
-                alertEvent.videoPath =
-                    videoPath
-                        ? reinterpret_cast<
-                            const char*>(videoPath)
-                        : "";
-
+                alertEvent.videoPath = videoPath ? reinterpret_cast<const char*>(videoPath) : "";
 
                 // 当前 pending 事件读取回来时，
                 // 业务状态默认为 NEW。
                 // 后续后台 ACK/RESOLVED 再完善。
-                alertEvent.status =
-                    event::EventStatus::NEW;
+                alertEvent.status = event::EventStatus::NEW;
 
-
-                pendingAlerts.push_back(
-                    std::move(alertEvent)
-                );
+                pendingAlerts.push_back(std::move(alertEvent));
             }
 
 
