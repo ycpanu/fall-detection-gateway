@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <string>
+#include <mutex>
 
 #include "fall-detection/event/AlertEvent.hpp"
 
@@ -14,7 +15,12 @@ namespace fall_detection
         class EventManager
         {
         public:
-            explicit EventManager(const std::string& deviceId, const std::string& deploymentArea);
+            explicit EventManager(
+                const std::string& deviceId,
+                const std::string& deploymentArea,
+                const std::string& videoOutputDir,
+                int64_t fusionWindowMs = 10000
+            );
 
             /**
              * @brief 对感知模块产生的事件进行统一处理
@@ -33,6 +39,15 @@ namespace fall_detection
 
             // 防止同一毫秒产生多个事件导致 ID 重复
             std::atomic<unsigned long long> sequence_{0};
+
+            std::mutex mutex_;
+
+            AlertEvent activeEvent_;
+            bool hasActiveEvent_ = false;
+
+            int64_t fusionWindowMs_ = 10000;
+
+            std::string videoOutputDir_;
         };
     }
 }

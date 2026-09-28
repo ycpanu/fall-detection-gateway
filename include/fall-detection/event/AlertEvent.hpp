@@ -63,6 +63,9 @@ namespace fall_detection
             std::string keyword;
 
             std::string videoPath;
+
+            bool isFusionUpdate = false;
+            bool captureVideo = false;
         };
 
         // 枚举转字符串

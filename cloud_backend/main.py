@@ -189,7 +189,7 @@ def on_message(client, userdata, msg):
                 return
 
             # event_id 幂等检查
-            existing_alert = (
+            existing = (
                 db.query(AlertRecord)
                 .filter(
                     AlertRecord.event_id == event_id
@@ -197,9 +197,36 @@ def on_message(client, userdata, msg):
                 .first()
             )
 
-            if existing_alert:
+            if existing:
+                incoming = data.get("data", {})
+
+                existing.sources = json.dumps(
+                    data.get("sources", []),
+                    ensure_ascii=False
+                )
+
+                keyword = incoming.get("keyword", "")
+                if keyword:
+                    existing.keyword = keyword
+
+                track_id = incoming.get("person_track_id", -1)
+                if track_id >= 0:
+                    existing.person_track_id = track_id
+
+                existing.trigger_x = incoming.get(
+                    "trigger_x",
+                    existing.trigger_x
+                )
+
+                existing.trigger_y = incoming.get(
+                    "trigger_y",
+                    existing.trigger_y
+                )
+
+                db.commit()
+
                 print(
-                    f"[MQTT] 重复报警事件，忽略："
+                    f"[FUSION] 更新多模态报警："
                     f"event_id={event_id}"
                 )
 

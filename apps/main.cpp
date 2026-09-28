@@ -72,7 +72,7 @@ int main(int argc, char* argv[])
     utils::SysLogger::getInstance().setLevel(config.getLogLevel());
     
     LOG_INFO("==================================================");
-    LOG_INFO("边缘网关系统启动 - 企业级高可用容灾版");
+    LOG_INFO("边缘网关系统启动");
     LOG_INFO("==================================================");
 
     // 2. 初始化降级容灾模块 (修复：增加严格的状态校验与降级告警)
@@ -238,7 +238,11 @@ int main(int argc, char* argv[])
 
     auto lastVoiceTriggerTime = std::chrono::steady_clock::time_point{};
     audio::AudioCapture audioCapture;
-    event::EventManager eventManager(config.getDeviceId(), config.getDeploymentArea());
+    event::EventManager eventManager(
+        config.getDeviceId(),
+        config.getDeploymentArea(),
+        config.getVideoOutputDir()
+    );
 
     // 4. 初始化流水线通信基础设施
     concurrency::ThreadSafeQueue<cv::Mat> frameQueue(config.getFrameQueueSize());
@@ -396,15 +400,15 @@ int main(int argc, char* argv[])
             // 采用带超时的出队，确保关机时能及时打破死锁
             if (alertQueue.wait_for_and_pop(event, std::chrono::milliseconds(500))) 
             {
-                if (event.eventType == fall_detection::event::EventType::FALL)
+                if (event.captureVideo && !event.videoPath.empty())
                 {
                     int fps = config.getVideoSaveFps();
 
-                    event.videoPath = config.getVideoOutputDir() + "/fall_" + event.eventId + ".mp4";
-
-                    videoCacher.saveVideoAsync(event.videoPath, fps, fps * 5);
-
-                    LOG_INFO("已启动跌倒事件视频记录：前置缓存 + 后置5秒，event_id={}", event.eventId);
+                    videoCacher.saveVideoAsync(
+                        event.videoPath,
+                        fps,
+                        fps * 5
+                    );
                 }
                 else if (
                     event.eventType ==
@@ -418,7 +422,10 @@ int main(int argc, char* argv[])
                     );
                 }
 
-                buzzer.triggerAlarm(config.getAlarmDurationMs());
+                if (!event.isFusionUpdate)
+                {
+                    buzzer.triggerAlarm(config.getAlarmDurationMs());
+                }
 
                 // MQTT 上报
                 if (mqttClient.isConnected())
