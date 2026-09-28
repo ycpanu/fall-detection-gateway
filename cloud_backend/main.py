@@ -177,215 +177,106 @@ def on_message(client, userdata, msg):
             
         # 【路由 B】：处理摔倒报警事件
         elif topic == ALERT_TOPIC:
-            print(
-                f"\n[MQTT] 收到统一报警事件: "
-                f"{payload}"
-            )
+            print(f"[MQTT] 收到报警事件: {payload}")
 
             event_id = data.get("event_id", "")
-
-            if not event_id:
-                print("[MQTT] 报警数据缺少 event_id，忽略")
-                return
-
-            # event_id 幂等检查
-            existing = (
-                db.query(AlertRecord)
-                .filter(
-                    AlertRecord.event_id == event_id
-                )
-                .first()
-            )
-
-            if existing:
-                incoming = data.get("data", {})
-
-                existing.sources = json.dumps(
-                    data.get("sources", []),
-                    ensure_ascii=False
-                )
-
-                keyword = incoming.get("keyword", "")
-                if keyword:
-                    existing.keyword = keyword
-
-                track_id = incoming.get("person_track_id", -1)
-                if track_id >= 0:
-                    existing.person_track_id = track_id
-
-                existing.trigger_x = incoming.get(
-                    "trigger_x",
-                    existing.trigger_x
-                )
-
-                existing.trigger_y = incoming.get(
-                    "trigger_y",
-                    existing.trigger_y
-                )
-
-                db.commit()
-
-                print(
-                    f"[FUSION] 更新多模态报警："
-                    f"event_id={event_id}"
-                )
-
-                return
-
-
-            event_data = data.get(
-                "data",
-                {}
-            )
-
-            event_id = data.get("event_id", "")
+            device_id = data.get("device_id", "unknown")
+            deployment_area = data.get("deployment_area", "未配置区域")
             event_type = data.get("event_type", "UNKNOWN")
-            sources = data.get("sources", [])
-            event_data = data.get("data", {})
+            incoming_sources = data.get("sources", [])
             timestamp = data.get("timestamp", 0)
 
-            fusion_window_ms = 10000
+            event_data = data.get("data", {})
 
-            recent_alert = db.query(AlertRecord).filter(
-                AlertRecord.device_id == data.get("device_id", "unknown"),
-                AlertRecord.timestamp >= timestamp - fusion_window_ms,
-                AlertRecord.timestamp <= timestamp + fusion_window_ms
-            ).order_by(AlertRecord.timestamp.desc()).first()
+            person_track_id = event_data.get("person_track_id", -1)
+            trigger_x = event_data.get("trigger_x", 0)
+            trigger_y = event_data.get("trigger_y", 0)
+            keyword = event_data.get("keyword", "")
 
-            should_fuse = False
+            if not event_id:
+                print("[MQTT] 报警事件缺少 event_id，已忽略")
+                return
 
-            if recent_alert:
+            existing = db.query(AlertRecord).filter(
+                AlertRecord.event_id == event_id
+            ).first()
+
+            # 已存在：说明是多模态融合更新，或者 MQTT 重复投递
+            if existing:
                 try:
-                    old_sources = json.loads(recent_alert.sources or "[]")
+                    old_sources = json.loads(existing.sources or "[]")
+
+                    if not isinstance(old_sources, list):
+                        old_sources = []
                 except Exception:
                     old_sources = []
 
-                incoming_has_vision = "VISION" in sources
-                incoming_has_voice = "VOICE" in sources
-                old_has_vision = "VISION" in old_sources
-                old_has_voice = "VOICE" in old_sources
-
-                should_fuse = (
-                    (incoming_has_vision and old_has_voice) or
-                    (incoming_has_voice and old_has_vision)
+                merged_sources = list(
+                    dict.fromkeys(old_sources + incoming_sources)
                 )
 
-            if should_fuse:
-                merged_sources = list(dict.fromkeys(old_sources + sources))
-
-                recent_alert.sources = json.dumps(
+                existing.sources = json.dumps(
                     merged_sources,
                     ensure_ascii=False
                 )
 
-                # 只要其中包含视觉跌倒，最终事件按 FALL 记录
-                if event_type == "FALL" or recent_alert.event_type == "FALL":
-                    recent_alert.event_type = "FALL"
-
-                keyword = event_data.get("keyword", "")
-                if keyword:
-                    recent_alert.keyword = keyword
-
-                person_track_id = event_data.get("person_track_id", -1)
-                if person_track_id >= 0:
-                    recent_alert.person_track_id = person_track_id
-
-                trigger_x = event_data.get("trigger_x", 0)
-                trigger_y = event_data.get("trigger_y", 0)
-
-                if trigger_x != 0 or trigger_y != 0:
-                    recent_alert.trigger_x = trigger_x
-                    recent_alert.trigger_y = trigger_y
-
-                deployment_area = data.get("deployment_area", "")
+                # 部署区域允许同步最新配置
                 if deployment_area:
-                    recent_alert.deployment_area = deployment_area
+                    existing.deployment_area = deployment_area
+
+                # 后到的是视觉模态时，补充视觉信息
+                if "VISION" in incoming_sources:
+                    if person_track_id >= 0:
+                        existing.person_track_id = person_track_id
+
+                    existing.trigger_x = trigger_x
+                    existing.trigger_y = trigger_y
+
+                # 后到的是语音模态时，补充关键词
+                if keyword:
+                    existing.keyword = keyword
 
                 db.commit()
 
                 print(
-                    f"[FUSION] 多模态事件融合成功："
-                    f"event_id={recent_alert.event_id}, "
+                    f"[FUSION] 报警事件已更新："
+                    f"event_id={event_id}, "
                     f"sources={merged_sources}"
                 )
 
                 return
 
+            # 不存在：第一次收到该报警事件
             new_alert = AlertRecord(
                 event_id=event_id,
-
-                device_id=data.get(
-                    "device_id",
-                    "unknown"
-                ),
-
-                deployment_area=data.get(
-                    "deployment_area",
-                    "未配置区域"
-                ),
-
-                event_type=data.get(
-                    "event_type",
-                    "UNKNOWN"
-                ),
+                device_id=device_id,
+                deployment_area=deployment_area,
+                event_type=event_type,
 
                 sources=json.dumps(
-                    data.get(
-                        "sources",
-                        []
-                    ),
+                    incoming_sources,
                     ensure_ascii=False
                 ),
 
-                timestamp=data.get(
-                    "timestamp",
-                    0
-                ),
+                timestamp=timestamp,
+                server_receive_time=int(time.time() * 1000),
 
-                server_receive_time=int(
-                    time.time() * 1000
-                ),
+                person_track_id=person_track_id,
+                trigger_x=trigger_x,
+                trigger_y=trigger_y,
+                keyword=keyword,
 
-                person_track_id=event_data.get(
-                    "person_track_id",
-                    -1
-                ),
-
-                trigger_x=event_data.get(
-                    "trigger_x",
-                    0
-                ),
-
-                trigger_y=event_data.get(
-                    "trigger_y",
-                    0
-                ),
-
-                keyword=event_data.get(
-                    "keyword",
-                    ""
-                ),
-
-                status=data.get(
-                    "status",
-                    "NEW"
-                ),
-
-                video_url=event_data.get(
-                    "video_url",
-                    ""
-                )
+                status="NEW",
+                video_url=""
             )
-
 
             db.add(new_alert)
             db.commit()
 
-
             print(
-                f"[MQTT] 报警事件已持久化："
+                f"[ALERT] 新报警事件已保存："
                 f"event_id={event_id}, "
-                f"type={new_alert.event_type}"
+                f"type={event_type}"
             )
             
     except Exception as e:
