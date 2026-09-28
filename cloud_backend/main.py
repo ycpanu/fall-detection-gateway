@@ -122,7 +122,7 @@ def get_db():
         db.close()
 
 # 2. 全局配置与 MQTT
-MQTT_BROKER = "10.48.212.22"
+MQTT_BROKER = "127.0.0.1"
 MQTT_PORT = 1883
 ALERT_TOPIC = "fall_detection/alerts"
 STATUS_TOPIC = "fall_detection/status/#" # 订阅所有设备的心跳主题
