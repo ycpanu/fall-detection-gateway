@@ -87,130 +87,87 @@ namespace fall_detection
         {
             if (!isConnected())
             {
-                LOG_ERROR(
-                    "发送报警失败：MQTT处于离线状态"
-                );
+                LOG_ERROR("发送报警失败：MQTT处于离线状态");
 
                 return false;
             }
-
 
             try
             {
                 json payloadJson;
 
-
-                // ==============================
                 // 事件基本信息
-                // ==============================
+                payloadJson["event_id"] = alertEvent.eventId;
 
-                payloadJson["event_id"] =
-                    alertEvent.eventId;
-
-                payloadJson["device_id"] =
-                    alertEvent.deviceId.empty()
-                        ? clientId_
-                        : alertEvent.deviceId;
+                payloadJson["device_id"] = alertEvent.deviceId.empty() ? clientId_ : alertEvent.deviceId;
 
                 payloadJson["deployment_area"] = alertEvent.deploymentArea;
 
-                payloadJson["event_type"] =
-                    fall_detection::event::toString(
-                        alertEvent.eventType
-                    );
+                payloadJson["event_type"] = fall_detection::event::toString(alertEvent.eventType);
 
-                payloadJson["timestamp"] =
-                    alertEvent.timestamp;
+                payloadJson["timestamp"] = alertEvent.timestamp;
 
-                payloadJson["status"] =
-                    fall_detection::event::toString(
-                        alertEvent.status
-                    );
+                payloadJson["status"] = fall_detection::event::toString(alertEvent.status);
 
-
-                // ==============================
                 // 事件来源
-                // ==============================
+                payloadJson["sources"] = json::array();
 
-                payloadJson["sources"] =
-                    json::array();
-
-                for (const auto source :
-                    alertEvent.source)
+                for (const auto source : alertEvent.source)
                 {
-                    payloadJson["sources"].push_back(
-                        fall_detection::event::toString(
-                            source
-                        )
-                    );
+                    payloadJson["sources"].push_back(fall_detection::event::toString(source));
                 }
 
-
-                // ==============================
                 // 事件附加信息
-                // ==============================
+                payloadJson["data"]["person_track_id"] = alertEvent.personTrackId;
 
-                payloadJson["data"]["person_track_id"] =
-                    alertEvent.personTrackId;
+                payloadJson["data"]["trigger_x"] = alertEvent.triggerBoxX;
 
-                payloadJson["data"]["trigger_x"] =
-                    alertEvent.triggerBoxX;
-
-                payloadJson["data"]["trigger_y"] =
-                    alertEvent.triggerBoxY;
+                payloadJson["data"]["trigger_y"] = alertEvent.triggerBoxY;
 
 
                 if (!alertEvent.keyword.empty())
                 {
-                    payloadJson["data"]["keyword"] =
-                        alertEvent.keyword;
+                    payloadJson["data"]["keyword"] = alertEvent.keyword;
                 }
-
 
                 /*
                 * 报警视频后续通过 HTTP 单独上传。
                 * 当前 MQTT 不发送本地文件内容。
                 */
-                payloadJson["data"]["video_url"] =
-                    "";
+                payloadJson["data"]["video_url"] = "";
 
+                const std::string payloadStr = payloadJson.dump();
 
-                const std::string payloadStr =
-                    payloadJson.dump();
-
-
-                mqtt::message_ptr pubmsg =
-                    mqtt::make_message(
-                        topic,
-                        payloadStr
-                    );
+                mqtt::message_ptr pubmsg = mqtt::make_message(topic, payloadStr);
 
                 pubmsg->set_qos(1);
                 pubmsg->set_retained(false);
 
+                // QoS 1 发布，等待 Broker 的 PUBACK
+                auto token = client_->publish(pubmsg);
 
-                client_->publish(pubmsg);
+                constexpr auto ACK_TIMEOUT = std::chrono::seconds(5);
 
+                if (!token->wait_for(ACK_TIMEOUT))
+                {
+                    LOG_ERROR(
+                        "MQTT 报警发送超时，未收到 Broker 确认：event_id={}",
+                        alertEvent.eventId
+                    );
+
+                    return false;
+                }
 
                 LOG_INFO(
-                    "MQTT报警事件已发送："
-                    "event_id={}, type={}, payload={}",
-                    alertEvent.eventId,
-                    fall_detection::event::toString(
-                        alertEvent.eventType
-                    ),
-                    payloadStr
+                    "MQTT 报警已收到 Broker QoS1 确认：event_id={}",
+                    alertEvent.eventId
                 );
-
 
                 return true;
             }
             catch (const mqtt::exception& exc)
             {
-                LOG_ERROR(
-                    "MQTT报警消息发布异常：{}",
-                    exc.what()
-                );
+                LOG_ERROR("MQTT报警消息发布异常：{}", exc.what());
 
                 return false;
             }
