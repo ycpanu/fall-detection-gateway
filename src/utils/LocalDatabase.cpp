@@ -1,3 +1,5 @@
+#include <sstream>
+
 #include "fall-detection/utils/LocalDatabase.hpp"
 #include "fall-detection/utils/SysLogger.hpp"
 
@@ -278,7 +280,7 @@ namespace fall_detection
 
             return true;
         }
-        
+
         std::vector<DBAlertEvent>LocalDatabase::getPendingAlerts()
         {
             std::vector<DBAlertEvent> pendingAlerts;
@@ -288,7 +290,7 @@ namespace fall_detection
                 return pendingAlerts;
             }
 
-            const std::string querySQL =
+            std::string querySQL =
                 "SELECT "
                 "id, "
                 "event_id, "
@@ -304,7 +306,8 @@ namespace fall_detection
                 "video_path, "
                 "event_status "
                 "FROM alerts "
-                "WHERE upload_status = 'pending';";
+                "WHERE upload_status = 'PENDING' "
+                "ORDER BY id ASC;";
 
             sqlite3_stmt* stmt = nullptr;
 
@@ -315,118 +318,172 @@ namespace fall_detection
                     &stmt,
                     nullptr) != SQLITE_OK)
             {
-                LOG_ERROR("查询待上传报警记录失败：{}",sqlite3_errmsg(db_));
+                LOG_ERROR(
+                    "查询待补传报警失败：{}",
+                    sqlite3_errmsg(db_)
+                );
 
                 return pendingAlerts;
             }
 
             while (sqlite3_step(stmt) == SQLITE_ROW)
             {
-                DBAlertEvent alertEvent;
+                DBAlertEvent alert;
 
-                alertEvent.dbId = sqlite3_column_int(stmt, 0);
+                alert.dbId =
+                    sqlite3_column_int(stmt, 0);
 
-                const auto* eventId =
-                    sqlite3_column_text(stmt, 1);
-
-                alertEvent.eventId = eventId ? reinterpret_cast<const char*>(eventId): "";
-
-                const auto* deviceId = sqlite3_column_text(stmt, 2);
-
-                const auto* deploymentArea = sqlite3_column_text(stmt, 3);
-
-                alertEvent.deploymentArea = deploymentArea ? reinterpret_cast<const char*>(deploymentArea): "";
-
-                alertEvent.deviceId = deviceId ? reinterpret_cast<const char*>(deviceId) : "";
-
-                // event_type
-                std::string eventTypeStr;
-
-                const auto* eventType = sqlite3_column_text(stmt, 4);
-
-                if (eventType)
+                auto readText =
+                    [&](int column) -> std::string
                 {
-                    eventTypeStr = reinterpret_cast<const char*>(eventType);
-                }
+                    const unsigned char* value =
+                        sqlite3_column_text(
+                            stmt,
+                            column
+                        );
 
-                if (eventTypeStr == "HELP_REQUEST")
+                    return value
+                        ? reinterpret_cast<const char*>(value)
+                        : "";
+                };
+
+                alert.eventId =
+                    readText(1);
+
+                alert.deviceId =
+                    readText(2);
+
+                alert.deploymentArea =
+                    readText(3);
+
+                std::string eventType =
+                    readText(4);
+
+                if (eventType == "FALL")
                 {
-                    alertEvent.eventType = event::EventType::HELP_REQUEST;
+                    alert.eventType =
+                        event::EventType::FALL;
                 }
                 else
                 {
-                    alertEvent.eventType = event::EventType::FALL;
+                    alert.eventType =
+                        event::EventType::HELP_REQUEST;
                 }
 
-                // sources
-                std::string sourcesStr;
+                // -----------------------------
+                // 解析报警来源
+                // -----------------------------
+                alert.source.clear();
 
-                const auto* sources = sqlite3_column_text(stmt, 5);
+                std::string sources =
+                    readText(5);
 
-                if (sources)
+                std::stringstream ss(sources);
+                std::string source;
+
+                while (std::getline(ss,source,','))
                 {
-                    sourcesStr = reinterpret_cast<const char*>(sources);
+                    if (source == "VISION")
+                    {
+                        alert.source.push_back(
+                            event::EventSource::VISION
+                        );
+                    }
+                    else if (source == "VOICE")
+                    {
+                        alert.source.push_back(
+                            event::EventSource::VOICE
+                        );
+                    }
                 }
 
+                alert.timestamp =
+                    sqlite3_column_int64(stmt, 6);
 
-                if (sourcesStr.find("VISION") != std::string::npos)
+                alert.personTrackId =
+                    sqlite3_column_int(stmt, 7);
+
+                alert.triggerBoxX =
+                    sqlite3_column_double(stmt, 8);
+
+                alert.triggerBoxY =
+                    sqlite3_column_double(stmt, 9);
+
+                alert.keyword =
+                    readText(10);
+
+                alert.videoPath =
+                    readText(11);
+
+                std::string eventStatus =
+                    readText(12);
+
+                if (eventStatus == "ACKNOWLEDGED")
                 {
-                    alertEvent.source.push_back(event::EventSource::VISION);
+                    alert.status =
+                        event::EventStatus::ACKNOWLEDGED;
                 }
-
-                if (sourcesStr.find("VOICE") != std::string::npos)
+                else if (eventStatus == "RESOLVED")
                 {
-                    alertEvent.source.push_back(event::EventSource::VOICE);
+                    alert.status =
+                        event::EventStatus::RESOLVED;
+                }
+                else
+                {
+                    alert.status =
+                        event::EventStatus::NEW;
                 }
 
-
-                alertEvent.timestamp = sqlite3_column_int64(stmt, 6);
-
-                alertEvent.personTrackId = sqlite3_column_int(stmt, 7);
-
-                alertEvent.triggerBoxX = sqlite3_column_int(stmt, 8);
-
-                alertEvent.triggerBoxY = sqlite3_column_int(stmt, 9);
-
-                const auto* keyword = sqlite3_column_text(stmt, 10);
-
-                alertEvent.keyword = keyword ? reinterpret_cast<const char*>(keyword) : "";
-
-                const auto* videoPath = sqlite3_column_text(stmt, 11);
-
-                alertEvent.videoPath = videoPath ? reinterpret_cast<const char*>(videoPath) : "";
-
-                // 当前 pending 事件读取回来时，
-                // 业务状态默认为 NEW。
-                // 后续后台 ACK/RESOLVED 再完善。
-                alertEvent.status = event::EventStatus::NEW;
-
-                pendingAlerts.push_back(std::move(alertEvent));
+                pendingAlerts.push_back(
+                    std::move(alert)
+                );
             }
-
 
             sqlite3_finalize(stmt);
 
             return pendingAlerts;
         }
 
-        bool LocalDatabase::markAsUploaded(int id)
+        bool LocalDatabase::markAsUploaded(const std::string& eventId)
         {
-            if (!isInitialized_) return false;
+            if (!isInitialized_)
+            {
+                return false;
+            }
+
+            std::string safeEventId;
+
+            for (char ch : eventId)
+            {
+                if (ch == '\'')
+                {
+                    safeEventId += "''";
+                }
+                else
+                {
+                    safeEventId += ch;
+                }
+            }
+
             std::string updateSQL =
                 "UPDATE alerts "
-                "SET upload_status = 'uploaded' "
-                "WHERE id = "
-                + std::to_string(id)
-                + ";";
-                
-            // 同样放入异步队列更新状态，消除同步等待
+                "SET upload_status = 'UPLOADED' "
+                "WHERE event_id = '" +
+                safeEventId +
+                "';";
+
             {
                 std::lock_guard<std::mutex> lock(queueMtx_);
                 sqlQueue_.push(std::move(updateSQL));
             }
+
             cv_.notify_one();
-            
+
+            LOG_INFO(
+                "报警事件已标记为已上传：event_id={}",
+                eventId
+            );
+
             return true;
         }
 

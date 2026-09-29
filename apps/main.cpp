@@ -34,8 +34,9 @@
 
 using namespace fall_detection;
 
-// 信号驱动的优雅退出标志
+// 信号驱动的退出标志
 volatile std::sig_atomic_t g_running = 1;
+
 void signalHandler(int signum) 
 {
     g_running = 0;
@@ -53,7 +54,6 @@ int main(int argc, char* argv[])
     {
         std::string path(exePath, count);
 
-        // 可执行文件在 bin/ 目录下，所以截取两次获取到的项目根目录
         std::string binDir = path.substr(0, path.find_last_of('/'));
         std::string rootDir = binDir + "/..";
 
@@ -71,11 +71,9 @@ int main(int argc, char* argv[])
     utils::SysLogger::getInstance().init(config.getLogFilePath());
     utils::SysLogger::getInstance().setLevel(config.getLogLevel());
     
-    LOG_INFO("==================================================");
-    LOG_INFO("边缘网关系统启动");
-    LOG_INFO("==================================================");
+    LOG_INFO("跌倒监测系统启动");
 
-    // 2. 初始化降级容灾模块 (修复：增加严格的状态校验与降级告警)
+    // 2. 初始化降级容灾模块
     hardware::BuzzerController buzzer(config.getBuzzerGpioPin());
     if (!buzzer.init()) 
     {
@@ -134,7 +132,7 @@ int main(int argc, char* argv[])
         mqttClient.subscribe(cmdTopic);
     }
 
-    // 3. 初始化核心视觉大脑 (修复：核心组件失败必须熔断拦截)
+    // 3. 初始化核心视觉大脑 
     vision::RKNNInferencer inferencer(config.getRknnModelPath(), config.getConfidenceThreshold(), config.getNmsThreshold());
     if (!inferencer.init()) 
     {
@@ -156,32 +154,24 @@ int main(int argc, char* argv[])
     vision::FallRuleConfig ruleConfig;
 
     // 关键点置信度
-    ruleConfig.kptConfThreshold =
-        config.getKptConfThreshold();
+    ruleConfig.kptConfThreshold = config.getKptConfThreshold();
 
     // 姿态角度
-    ruleConfig.fallAngleThreshold =
-        config.getFallAngleThreshold();
+    ruleConfig.fallAngleThreshold = config.getFallAngleThreshold();
 
-    ruleConfig.recoveryAngleThreshold =
-        config.getRecoveryAngleThreshold();
+    ruleConfig.recoveryAngleThreshold = config.getRecoveryAngleThreshold();
 
     // 运动特征
-    ruleConfig.normalizedVelocityThreshold =
-        config.getNormalizedVelocityThreshold();
+    ruleConfig.normalizedVelocityThreshold = config.getNormalizedVelocityThreshold();
 
-    ruleConfig.normalizedCenterVelocityThreshold =
-        config.getNormalizedCenterVelocityThreshold();
+    ruleConfig.normalizedCenterVelocityThreshold = config.getNormalizedCenterVelocityThreshold();
 
     // 时间状态机
-    ruleConfig.suspectConfirmMs =
-        config.getSuspectConfirmMs();
+    ruleConfig.suspectConfirmMs = config.getSuspectConfirmMs();
 
-    ruleConfig.staticLieConfirmMs =
-        config.getStaticLieConfirmMs();
+    ruleConfig.staticLieConfirmMs = config.getStaticLieConfirmMs();
 
-    ruleConfig.fallEventWindowMs =
-        config.getFallEventWindowMs();
+    ruleConfig.fallEventWindowMs = config.getFallEventWindowMs();
 
     ruleConfig.safeZoneOverlapThreshold = config.getSafeZoneOverlapThreshold();
 
@@ -200,40 +190,21 @@ int main(int argc, char* argv[])
     // 离线语音初始化
     audio::KeywordSpotter keywordSpotter;
     audio::KeywordSpotterConfig kwsConfig;
-    kwsConfig.encoderPath =
-        "models/kws/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx";
-
-    kwsConfig.decoderPath =
-        "models/kws/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx";
-
-    kwsConfig.joinerPath =
-        "models/kws/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx";
-
-    kwsConfig.tokensPath =
-        "models/kws/tokens.txt";
-
-    kwsConfig.keywordsPath =
-        "models/kws/keywords_custom.txt";
-
+    kwsConfig.encoderPath = "models/kws/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx";
+    kwsConfig.decoderPath = "models/kws/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx";
+    kwsConfig.joinerPath = "models/kws/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx";
+    kwsConfig.tokensPath = "models/kws/tokens.txt";
+    kwsConfig.keywordsPath = "models/kws/keywords_custom.txt";
     kwsConfig.sampleRate = 16000;
     kwsConfig.numThreads = 2;
-
-    bool kwsAvailable =
-        keywordSpotter.initialize(kwsConfig);
-
-
+    bool kwsAvailable = keywordSpotter.initialize(kwsConfig);
     if (!kwsAvailable)
     {
-        LOG_ERROR(
-            "语音关键词识别初始化失败，"
-            "系统将以纯视觉模式继续运行"
-        );
+        LOG_ERROR("语音关键词识别初始化失败，系统将以纯视觉模式继续运行");
     }
     else
     {
-        LOG_INFO(
-            "离线语音关键词识别模块初始化成功"
-        );
+        LOG_INFO("离线语音关键词识别模块初始化成功");
     }
 
     auto lastVoiceTriggerTime = std::chrono::steady_clock::time_point{};
@@ -253,109 +224,55 @@ int main(int argc, char* argv[])
     {
         audio::AudioCaptureConfig audioConfig;
 
-        /*
-        * 前面通过 arecord -l 已经确认：
-        *
-        * card 2
-        * device 0
-        */
-        audioConfig.device =
-            "plughw:CARD=Device,DEV=0";
+        audioConfig.device = "plughw:CARD=Device,DEV=0";
 
-        audioConfig.sampleRate =
-            16000;
+        audioConfig.sampleRate = 16000;
 
-        audioConfig.channels =
-            1;
+        audioConfig.channels = 1;
 
         /*
         * 100ms 音频：
         *
         * 16000 × 0.1 = 1600 samples
         */
-        audioConfig.framesPerChunk =
-            1600;
+        audioConfig.framesPerChunk = 1600;
 
-
-        const bool audioStarted =
-            audioCapture.start(
-                audioConfig,
-
-                [&](const std::vector<float>& samples)
+        const bool audioStarted = audioCapture.start(audioConfig,[&](const std::vector<float>& samples)
                 {
-                    auto keyword =
-                        keywordSpotter.processSamples(
-                            samples
-                        );
-
+                    auto keyword = keywordSpotter.processSamples(samples);
 
                     if (keyword)
                     {
-                        const auto now =
-                            std::chrono::steady_clock::now();
+                        const auto now = std::chrono::steady_clock::now();
 
+                        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastVoiceTriggerTime).count();
 
-                        const auto elapsedMs =
-                            std::chrono::duration_cast<
-                                std::chrono::milliseconds
-                            >(
-                                now - lastVoiceTriggerTime
-                            ).count();
-
-
-                        constexpr long long VOICE_COOLDOWN_MS =
-                            5000;
-
+                        constexpr long long VOICE_COOLDOWN_MS = 5000;
 
                         /*
                         * 第一次触发，或者距离上次已经超过5秒。
                         */
-                        if (lastVoiceTriggerTime.time_since_epoch().count() == 0 ||
-                            elapsedMs >= VOICE_COOLDOWN_MS)
+                        if (lastVoiceTriggerTime.time_since_epoch().count() == 0 || elapsedMs >= VOICE_COOLDOWN_MS)
                         {
-                            lastVoiceTriggerTime =
-                                now;
+                            lastVoiceTriggerTime = now;
 
-
-                            LOG_WARN(
-                                "【语音求救】检测到关键词：{}",
-                                *keyword
-                            );
-
+                            LOG_WARN("【语音求救】检测到关键词：{}",*keyword);
 
                             fall_detection::event::AlertEvent voiceEvent;
 
-                            voiceEvent.eventType =
-                                fall_detection::event::EventType::HELP_REQUEST;
+                            voiceEvent.eventType = fall_detection::event::EventType::HELP_REQUEST;
 
-                            voiceEvent.source = {
-                                fall_detection::event::EventSource::VOICE
-                            };
+                            voiceEvent.source = {fall_detection::event::EventSource::VOICE};
 
-                            voiceEvent.status =
-                                fall_detection::event::EventStatus::NEW;
+                            voiceEvent.status = fall_detection::event::EventStatus::NEW;
 
-                            voiceEvent.keyword =
-                                *keyword;
+                            voiceEvent.keyword = *keyword;
 
-                            voiceEvent.timestamp =
-                                std::chrono::duration_cast<
-                                    std::chrono::milliseconds
-                                >(
-                                    std::chrono::system_clock::now()
-                                        .time_since_epoch()
-                                ).count();
+                            voiceEvent.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
+                            auto managedEvent = eventManager.prepareEvent(std::move(voiceEvent));
 
-                            auto managedEvent =
-                                eventManager.prepareEvent(
-                                    std::move(voiceEvent)
-                                );
-
-
-                            alertQueue.push(
-                                std::move(managedEvent)
-                            );
+                            alertQueue.push(std::move(managedEvent));
                         }
                     }
                 }
@@ -364,10 +281,7 @@ int main(int argc, char* argv[])
 
         if (!audioStarted)
         {
-            LOG_ERROR(
-                "USB 麦克风启动失败，"
-                "系统将以纯视觉模式继续运行"
-            );
+            LOG_ERROR("USB 麦克风启动失败，系统将以纯视觉模式继续运行");
         }
     }
 
@@ -391,72 +305,175 @@ int main(int argc, char* argv[])
         return -1;
     }
 
-    // 6. 启动预警响应后台线程 (消费者)
-    std::thread alertThread([&]() 
+    // 6. 统一报警响应线程
+    std::thread alertThread([&]()
     {
-        while (g_running) 
+        LOG_INFO("[Alert] 报警处理线程已启动");
+
+        while (g_running)
         {
-            vision::AlertEvent event;
-            // 采用带超时的出队，确保关机时能及时打破死锁
-            if (alertQueue.wait_for_and_pop(event, std::chrono::milliseconds(500))) 
+            event::AlertEvent alertEvent;
+
+            // 带超时等待，保证 Ctrl+C 后能够及时退出
+            if (!alertQueue.wait_for_and_pop(
+                    alertEvent,
+                    std::chrono::milliseconds(500)))
             {
-                if (event.captureVideo && !event.videoPath.empty())
-                {
-                    int fps = config.getVideoSaveFps();
+                continue;
+            }
 
-                    videoCacher.saveVideoAsync(
-                        event.videoPath,
-                        fps,
-                        fps * 5
+            LOG_WARN(
+                "[Alert] 收到报警事件：event_id={}, type={}, fusion_update={}",
+                alertEvent.eventId,
+                event::toString(alertEvent.eventType),
+                alertEvent.isFusionUpdate
+            );
+
+            // 1. 本地蜂鸣报警
+            // 首次报警才触发蜂鸣，融合更新不重复鸣叫。
+            if (!alertEvent.isFusionUpdate)
+            {
+                buzzer.triggerAlarm(config.getAlarmDurationMs());
+            }
+
+            // 2. 现场视频
+            // 只有包含视觉跌倒时才录像：
+            if (alertEvent.captureVideo)
+            {
+                if (alertEvent.videoPath.empty())
+                {
+                    alertEvent.videoPath = config.getVideoOutputDir() + "/fall_" + alertEvent.eventId + ".mp4";
+                }
+
+                LOG_INFO(
+                    "[Alert] 启动事件录像：event_id={}, path={}",
+                    alertEvent.eventId,
+                    alertEvent.videoPath
+                );
+
+                // 这里保持你目前已经实现成功的
+                // “预录约3秒 + 后录约5秒”调用方式。
+                videoCacher.saveVideoAsync(alertEvent.videoPath,config.getVideoSaveFps());
+            }
+
+            // 3. Local First
+            // 不管网络是否正常，报警首先写入 SQLite。
+            // saveAlert 内部使用 event_id UPSERT：
+            // 第一次事件 -> INSERT PENDING
+            // 融合事件   -> UPDATE 同一 event_id，重新 PENDING
+            if (!localDb.saveAlert(alertEvent))
+            {
+                LOG_ERROR(
+                    "[Alert] 本地持久化失败：event_id={}",
+                    alertEvent.eventId
+                );
+            }
+
+            // 4. 当前网络在线则立即尝试上传
+            if (mqttClient.isConnected())
+            {
+                LOG_INFO(
+                    "[Alert] MQTT 在线，立即上报：event_id={}",
+                    alertEvent.eventId
+                );
+
+                if (mqttClient.publishAlert(config.getAlertTopic(), alertEvent))
+                {
+                    // publishAlert 返回 true 表示
+                    // QoS 1 已收到 Broker 确认。
+                    localDb.markAsUploaded(
+                        alertEvent.eventId
                     );
-                }
-                else if (
-                    event.eventType ==
-                    fall_detection::event::EventType::HELP_REQUEST)
-                {
-                    LOG_WARN(
-                        "收到语音求救报警："
-                        "event_id={}, keyword={}",
-                        event.eventId,
-                        event.keyword
+
+                    LOG_INFO(
+                        "[Alert] 报警上报成功：event_id={}",
+                        alertEvent.eventId
                     );
-                }
-
-                if (!event.isFusionUpdate)
-                {
-                    buzzer.triggerAlarm(config.getAlarmDurationMs());
-                }
-
-                // MQTT 上报
-                if (mqttClient.isConnected())
-                {
-                    // 补传历史报警
-                    auto pendingAlerts = localDb.getPendingAlerts();
-                    for (auto& pendingEvent : pendingAlerts)
-                    {
-                        LOG_INFO("准备补传历史报警: event_id={}, type={}", pendingEvent.eventId, event::toString(pendingEvent.eventType));
-
-                        if (mqttClient.publishAlert(config.getAlertTopic(), pendingEvent))
-                        {
-                            localDb.markAsUploaded(pendingEvent.dbId);
-                        }
-                    }
-
-                    LOG_INFO("MQTT在线, 准备上报: event_id={}, type={}", event.eventId, fall_detection::event::toString(event.eventType));
-                    
-                    if (!mqttClient.publishAlert(config.getAlertTopic(), event))
-                    {
-                        LOG_ERROR("MQTT报警发送失败: event_id={}", event.eventId);
-                        localDb.saveAlert(event);
-                    }
                 }
                 else
                 {
-                    LOG_WARN("MQTT当前离线,暂时无法上报警报: event_id={}", event.eventId);
-                    localDb.saveAlert(event);
+                    LOG_WARN(
+                        "[Alert] 报警上报失败，保留 PENDING 等待补传：event_id={}",
+                        alertEvent.eventId
+                    );
                 }
             }
+            else
+            {
+                // 同样不需要再调用 saveAlert，
+                // 因为前面已经保存过了。
+                LOG_WARN(
+                    "[Alert] MQTT 当前离线，报警已本地保存：event_id={}",
+                    alertEvent.eventId
+                );
+            }
         }
+
+        LOG_INFO("[Alert] 报警处理线程已退出");
+    });
+
+    std::thread retryThread([&]()
+    {
+        LOG_INFO("[Retry] 报警补传线程已启动");
+
+        while (g_running)
+        {
+            if (mqttClient.isConnected())
+            {
+                auto pendingAlerts = localDb.getPendingAlerts();
+
+                if (!pendingAlerts.empty())
+                {
+                    LOG_INFO(
+                        "[Retry] 检测到 {} 条待补传报警",
+                        pendingAlerts.size()
+                    );
+                }
+
+                for (const auto& alert : pendingAlerts)
+                {
+                    if (!g_running)
+                    {
+                        break;
+                    }
+
+                    LOG_INFO(
+                        "[Retry] 正在补传报警：event_id={}",
+                        alert.eventId
+                    );
+
+                    if (mqttClient.publishAlert(config.getAlertTopic(),alert))
+                    {
+                        localDb.markAsUploaded(alert.eventId);
+
+                        LOG_INFO(
+                            "[Retry] 报警补传成功：event_id={}",
+                            alert.eventId
+                        );
+                    }
+                    else
+                    {
+                        LOG_WARN("[Retry] 报警补传失败，等待下次重试：event_id={}",alert.eventId);
+
+                        // 网络可能刚刚再次断开，
+                        // 本轮不继续连续发送其他记录
+                        break;
+                    }
+                }
+            }
+
+            // 每 3 秒检查一次，但 100ms 就能响应退出
+            for (int i = 0;
+                i < 30 && g_running;
+                ++i)
+            {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(100)
+                );
+            }
+        }
+
+        LOG_INFO("[Retry] 报警补传线程已退出");
     });
 
     // 系统硬件心跳守护进程
@@ -505,7 +522,7 @@ int main(int argc, char* argv[])
 
     // 7. AI 主干视觉流水线 (生产者)
     LOG_INFO("AI 视觉主干流水线已就绪，进入实时监测模式...");
-    // ==================== 性能统计 ====================
+    //  性能统计 
     constexpr int PERF_WARMUP_FRAMES = 20;
     constexpr double PERF_REPORT_INTERVAL_SEC = 5.0;
 
@@ -517,7 +534,6 @@ int main(int argc, char* argv[])
     double perfDetectMaxMs = 0.0;
 
     auto perfWindowStart = std::chrono::steady_clock::now();
-    // ==================================================
     while (g_running)
     {
         cv::Mat frame;
@@ -557,8 +573,6 @@ int main(int argc, char* argv[])
         double detectMs =
             std::chrono::duration<double, std::milli>(
                 detectEnd - detectStart).count();
-        // =========================================================
-
         if (detectOk)
         {
             // 前 20 帧作为预热帧，不计入性能统计
@@ -691,6 +705,12 @@ int main(int argc, char* argv[])
     }
     LOG_INFO("[Shutdown] alertThread 已退出");
 
+    LOG_INFO("[Shutdown] 正在等待 retryThread...");
+    if (retryThread.joinable())
+    {
+        retryThread.join();
+    }
+    LOG_INFO("[Shutdown] retryThread 已退出");
     LOG_INFO("[Shutdown] 正在断开 MQTT...");
     mqttClient.disconnect();
     LOG_INFO("[Shutdown] MQTT 已断开");

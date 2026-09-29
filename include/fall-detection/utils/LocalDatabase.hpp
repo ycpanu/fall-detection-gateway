@@ -34,7 +34,7 @@ namespace fall_detection
                 std::vector<DBAlertEvent> getPendingAlerts();
 
                 // 异步更新数据库上传状态
-                bool markAsUploaded(int id);
+                bool markAsUploaded(const std::string& eventId);
             
             private:
                 // 同步执行底层的 SQL (仅限内部或后台线程调用)
