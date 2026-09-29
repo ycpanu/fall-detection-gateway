@@ -1,23 +1,30 @@
 [Unit]
-Description=Enterprise Fall Detection Edge Gateway
-After=network.target network-online.target
+Description=Multimodal Edge Fall Detection Gateway
+After=network-online.target sound.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-# 注意：部署时请将 /path/to 替换为香橙派上项目的真实绝对路径
-WorkingDirectory=/path/to/fall-detection-gateway
-ExecStart=/path/to/fall-detection-gateway/bin/fall_detection_gateway
 
-# 核心容灾：崩溃自动拉起
-Restart=always
-RestartSec=5
+User=orangepi
+Group=orangepi
 
-# 日志转交 Linux 系统日志
-StandardOutput=syslog
-StandardError=syslog
-SyslogIdentifier=FallGateway
+WorkingDirectory=/home/orangepi/projects/fall-detection-gateway
+
+ExecStart=/home/orangepi/projects/fall-detection-gateway/bin/fall_detection_gateway
+
+Environment="HOME=/home/orangepi"
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="LD_LIBRARY_PATH=/home/orangepi/projects/fall-detection-gateway/lib:/usr/local/lib:/usr/lib/aarch64-linux-gnu"
+
+Restart=on-failure
+RestartSec=3
+
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
