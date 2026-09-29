@@ -259,37 +259,28 @@ namespace fall_detection
             }
             else
             {
-                LOG_INFO("MQTT 自动重连成功：{}",cause);
+                LOG_INFO("MQTT 自动重连成功: {}", cause);
             }
 
             std::vector<std::pair<std::string, int>> subscriptionsCopy;
+
             {
                 std::lock_guard<std::mutex> lock(subscriptionMtx_);
-
                 subscriptionsCopy = subscriptions_;
             }
 
-            for (const auto& item :subscriptionsCopy)
+            // connected() 运行在 Paho MQTT 的内部回调线程中，这里不能调用 token->wait()
+            // 否则会阻塞 Paho 自己的网络处理线程，引发死锁
+            for (const auto& item : subscriptionsCopy)
             {
-                try
+                try 
                 {
-                    client_->subscribe(item.first, item.second)->wait();
-
-                    LOG_INFO(
-                        "MQTT 自动恢复订阅："
-                        "topic={}, qos={}",
-                        item.first,
-                        item.second
-                    );
+                    client_->subscribe(item.first, item.second);
+                    LOG_INFO("MQTT 已提交自动恢复订阅: topic={}, qos={}", item.first, item.second);
                 }
-                catch (const mqtt::exception& exc)
+                catch(const mqtt::exception& exc)
                 {
-                    LOG_ERROR(
-                        "MQTT 恢复订阅失败："
-                        "topic={}, error={}",
-                        item.first,
-                        exc.what()
-                    );
+                    LOG_ERROR("MQTT 恢复订阅失败: topic={}, error={}", item.first, exc.what());
                 }
             }
         }

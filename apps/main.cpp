@@ -464,23 +464,17 @@ int main(int argc, char* argv[])
     utils::SystemMonitor systemMonitor;
     std::thread heartbeatThread([&]()
     {
+        LOG_INFO("[Heartbeat] 心跳线程启动");
         while (g_running)
         {
             if (mqttClient.isConnected())
             {
+                LOG_INFO("[Heartbeat] 开始采集系统资源");
                 int cpuUsage = systemMonitor.getCpuUsage();
                 int memoryUsage = systemMonitor.getMemoryUsage();
                 int storageUsage = systemMonitor.getStorageUsage("/");
 
                 std::string statusTopic = "fall_detection/status/" + config.getDeviceId();
-
-                mqttClient.publishStatus(
-                    statusTopic,
-                    cpuUsage,
-                    memoryUsage,
-                    storageUsage,
-                    config.getDeploymentArea()
-                );
 
                 LOG_INFO(
                     "设备状态心跳：CPU={}%，内存={}%，存储={}%",
@@ -488,6 +482,17 @@ int main(int argc, char* argv[])
                     memoryUsage,
                     storageUsage
                 );
+
+                bool ok = mqttClient.publishStatus(
+                    statusTopic,
+                    cpuUsage,
+                    memoryUsage,
+                    storageUsage,
+                    config.getDeploymentArea()
+                );
+
+                LOG_INFO("[Heartbeat] MQTT 心跳发送调试结束, result={}", ok);
+
             }
 
             for (int i = 0; i < 100 && g_running; ++i)
@@ -495,6 +500,7 @@ int main(int argc, char* argv[])
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         }
+        LOG_INFO("[Heartbeat] 心跳线程已退出");
     });
 
     // 7. AI 主干视觉流水线 (生产者)
@@ -658,19 +664,37 @@ int main(int argc, char* argv[])
 
     // 8. 捕获信号并执行优雅退出
     LOG_INFO("接收到退出信号，正在安全释放所有系统组件...");
-    streamer->stop();
-    liveStreamer.stop();
-    audioCapture.stop();
-    
-    if (heartbeatThread.joinable()) heartbeatThread.join();
 
-    if (alertThread.joinable()) 
+    LOG_INFO("[Shutdown] 正在停止 CameraStreamer...");
+    streamer->stop();
+    LOG_INFO("[Shutdown] CameraStreamer 已停止");
+
+    LOG_INFO("[Shutdown] 正在停止 AudioCapture...");
+    audioCapture.stop();
+    LOG_INFO("[Shutdown] AudioCapture 已停止");
+
+    LOG_INFO("[Shutdown] 正在停止 LiveStreamer...");
+    liveStreamer.stop();
+    LOG_INFO("[Shutdown] LiveStreamer 已停止");
+
+    LOG_INFO("[Shutdown] 正在等待 heartbeatThread...");
+    if (heartbeatThread.joinable())
+    {
+        heartbeatThread.join();
+    }
+    LOG_INFO("[Shutdown] heartbeatThread 已退出");
+
+    LOG_INFO("[Shutdown] 正在等待 alertThread...");
+    if (alertThread.joinable())
     {
         alertThread.join();
     }
-    
+    LOG_INFO("[Shutdown] alertThread 已退出");
+
+    LOG_INFO("[Shutdown] 正在断开 MQTT...");
     mqttClient.disconnect();
-    
+    LOG_INFO("[Shutdown] MQTT 已断开");
+
     LOG_INFO("系统资源释放完毕，安全退出！");
     return 0;
 }
