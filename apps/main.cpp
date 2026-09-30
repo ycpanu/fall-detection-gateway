@@ -8,6 +8,7 @@
 #include <limits.h>
 #include <fstream>
 #include <string>
+#include <stdexcept>
 #include <opencv2/opencv.hpp>
 #include <nlohmann/json.hpp>
 
@@ -81,9 +82,21 @@ int main(int argc, char* argv[])
     }
 
     utils::LocalDatabase localDb(config.getSqliteDbPath());
-    if (!localDb.init()) 
+    if (!localDb.init())
     {
         LOG_CRITICAL("【降级警告】本地 SQLite 容灾数据库初始化失败！断网时报警数据将面临丢失风险！");
+    }
+
+    const std::string sceneConfigPath = "configs/scene_config.json";
+
+    vision::SafeZoneManager safeZoneManager;
+    if (!safeZoneManager.load(sceneConfigPath))
+    {
+        LOG_WARN("安全区域配置加载失败，系统暂时不启用安全躺卧区域");
+    }
+    else
+    {
+        LOG_INFO("安全躺卧区域加载完成，共 {} 个区域", safeZoneManager.getZoneCount());
     }
 
     network::LiveStreamer liveStreamer(640, 480, 30);
@@ -94,28 +107,95 @@ int main(int argc, char* argv[])
     {
         try
         {
-            auto json = nlohmann::json::parse(payload);
-            if (json.contains("cmd"))
+            const auto json = nlohmann::json::parse(payload);
+
+            if (!json.contains("cmd") || !json["cmd"].is_string())
             {
-                std::string cmd = json["cmd"];
-                if (cmd == "start_live")
+                LOG_WARN("收到无效 MQTT 指令：缺少 cmd");
+                return;
+            }
+
+            const std::string cmd = json["cmd"].get<std::string>();
+
+            if (cmd == "start_live")
+            {
+                if (!json.contains("rtmp_url") || !json["rtmp_url"].is_string())
                 {
-                    std::string url = json["rtmp_url"];
-                    LOG_INFO("收到小程序请求，准备推流至：{}", url);
-                    liveStreamer.start(url);
+                    LOG_WARN("start_live 指令缺少 rtmp_url");
+                    return;
                 }
-                else if(cmd == "stop_live")
+
+                const std::string url = json["rtmp_url"].get<std::string>();
+                LOG_INFO("收到实时视频请求，准备推流至：{}", url);
+                liveStreamer.start(url);
+            }
+            else if (cmd == "stop_live")
+            {
+                LOG_INFO("收到停止实时视频指令");
+                liveStreamer.stop();
+            }
+            else if (cmd == "update_safe_zones")
+            {
+                const std::string requestId = json.value("request_id", "");
+
+                if (!json.contains("safe_lie_zones") || !json["safe_lie_zones"].is_array())
                 {
-                    LOG_INFO("收到小程序请求，停止推流");
-                    liveStreamer.stop();
+                    LOG_ERROR("安全区域配置指令格式错误：safe_lie_zones 不存在或不是数组，request_id={}", requestId);
+                    return;
                 }
+
+                std::vector<vision::SafeLieZone> newZones;
+
+                for (const auto& zoneJson : json["safe_lie_zones"])
+                {
+                    if (!zoneJson.is_object())
+                    {
+                        throw std::runtime_error("安全区域必须为 JSON 对象");
+                    }
+
+                    vision::SafeLieZone zone;
+                    zone.name = zoneJson.value("name", "");
+
+                    if (!zoneJson.contains("points") || !zoneJson["points"].is_array())
+                    {
+                        throw std::runtime_error("安全区域 points 不存在或不是数组");
+                    }
+
+                    for (const auto& pointJson : zoneJson["points"])
+                    {
+                        if (!pointJson.is_array() || pointJson.size() != 2)
+                        {
+                            throw std::runtime_error("安全区域坐标必须为 [x, y]");
+                        }
+
+                        vision::NormalizedPoint point;
+                        point.x = pointJson[0].get<float>();
+                        point.y = pointJson[1].get<float>();
+
+                        zone.points.push_back(point);
+                    }
+
+                    newZones.push_back(std::move(zone));
+                }
+
+                if (safeZoneManager.replaceZonesAndSave(newZones, sceneConfigPath))
+                {
+                    LOG_INFO("安全区域配置更新成功：request_id={}, zone_count={}", requestId, safeZoneManager.getZoneCount());
+                }
+                else
+                {
+                    LOG_ERROR("安全区域配置更新失败：request_id={}", requestId);
+                }
+            }
+            else
+            {
+                LOG_WARN("收到未知 MQTT 指令：{}", cmd);
             }
         }
         catch (const std::exception& e)
         {
             LOG_ERROR("解析 MQTT 指令失败：{}", e.what());
         }
-        
     });
 
     // 连接云端
@@ -138,17 +218,6 @@ int main(int argc, char* argv[])
     {
         LOG_ERROR("致命错误：NPU 硬件加速推理模型加载失败，系统即将强制退出！");
         return -1;
-    }
-
-    // 加载场景安全区域
-    vision::SafeZoneManager safeZoneManager;
-    if (!safeZoneManager.load("configs/scene_config.json"))
-    {
-        LOG_WARN("安全区域配置加载失败，系统暂时不启用安全躺卧区域");
-    }
-    else
-    {
-        LOG_INFO("安全躺卧区域加载完成，共 {} 个区域", safeZoneManager.getZoneCount());
     }
 
     vision::FallRuleConfig ruleConfig;

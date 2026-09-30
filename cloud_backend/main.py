@@ -2,6 +2,7 @@ import json
 import time
 import os
 import shutil
+import uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, UploadFile, File, Request
 from fastapi.staticfiles import StaticFiles
@@ -112,6 +113,13 @@ class DeviceRecord(Base):
 
     last_online_time = Column(Integer, default=0)
 
+class SceneConfigRecord(Base):
+    __tablename__ = "scene_configs"
+
+    device_id = Column(String, primary_key=True, index=True)
+    config_json = Column(String, nullable=False, default='{"version":1,"safe_lie_zones":[]}')
+    updated_at = Column(Integer, default=0)
+
 Base.metadata.create_all(bind=engine)
 
 def get_db():
@@ -134,6 +142,14 @@ class LiveCommand(BaseModel):
 
 class AlertStatusUpdate(BaseModel):
     status: str
+
+class SafeZoneItem(BaseModel):
+    name: str
+    points: list[list[float]]
+
+
+class SafeZoneUpdateRequest(BaseModel):
+    safe_lie_zones: list[SafeZoneItem]
 
 # 3. MQTT 回调函数 (核心重构)
 def on_connect(client, userdata, flags, rc):
@@ -483,6 +499,167 @@ async def get_devices(db: Session = Depends(get_db)):
         })
         
     return {"code": 200, "data": res_list}
+
+@app.get("/api/devices/{device_id}/safe-zones")
+async def get_safe_zones(
+    device_id: str,
+    db: Session = Depends(get_db)
+):
+    record = (
+        db.query(SceneConfigRecord)
+        .filter(SceneConfigRecord.device_id == device_id)
+        .first()
+    )
+
+    if not record:
+        return {
+            "code": 200,
+            "data": {
+                "device_id": device_id,
+                "version": 1,
+                "safe_lie_zones": []
+            }
+        }
+
+    try:
+        config_data = json.loads(record.config_json)
+    except Exception:
+        config_data = {
+            "version": 1,
+            "safe_lie_zones": []
+        }
+
+    return {
+        "code": 200,
+        "data": {
+            "device_id": device_id,
+            "version": config_data.get("version", 1),
+            "safe_lie_zones": config_data.get("safe_lie_zones", []),
+            "updated_at": record.updated_at
+        }
+    }
+
+@app.post("/api/devices/{device_id}/safe-zones")
+async def update_safe_zones(
+    device_id: str,
+    request: SafeZoneUpdateRequest,
+    db: Session = Depends(get_db)
+):
+    global mqtt_client
+
+    normalized_zones = []
+
+    for zone in request.safe_lie_zones:
+        zone_name = zone.name.strip()
+
+        if not zone_name:
+            return {
+                "code": 400,
+                "message": "安全区域名称不能为空"
+            }
+
+        if len(zone.points) < 3:
+            return {
+                "code": 400,
+                "message": f"安全区域 {zone_name} 至少需要 3 个顶点"
+            }
+
+        normalized_points = []
+
+        for index, point in enumerate(zone.points):
+            if len(point) != 2:
+                return {
+                    "code": 400,
+                    "message": f"安全区域 {zone_name} 第 {index + 1} 个坐标格式错误"
+                }
+
+            x = float(point[0])
+            y = float(point[1])
+
+            if x < 0.0 or x > 1.0 or y < 0.0 or y > 1.0:
+                return {
+                    "code": 400,
+                    "message": f"安全区域 {zone_name} 第 {index + 1} 个坐标超出 [0, 1]"
+                }
+
+            normalized_points.append([x, y])
+
+        normalized_zones.append({
+            "name": zone_name,
+            "points": normalized_points
+        })
+
+    if mqtt_client is None or not mqtt_client.is_connected():
+        return {
+            "code": 503,
+            "message": "MQTT Broker 当前不可用"
+        }
+
+    request_id = uuid.uuid4().hex
+
+    command = {
+        "cmd": "update_safe_zones",
+        "request_id": request_id,
+        "safe_lie_zones": normalized_zones
+    }
+
+    topic = f"fall_detection/commands/{device_id}"
+
+    publish_result = mqtt_client.publish(
+        topic,
+        json.dumps(command, ensure_ascii=False),
+        qos=1,
+        retain=True
+    )
+
+    if publish_result.rc != mqtt.MQTT_ERR_SUCCESS:
+        return {
+            "code": 500,
+            "message": "安全区域 MQTT 指令发送失败"
+        }
+
+    config_data = {
+        "version": 1,
+        "safe_lie_zones": normalized_zones
+    }
+
+    record = (
+        db.query(SceneConfigRecord)
+        .filter(SceneConfigRecord.device_id == device_id)
+        .first()
+    )
+
+    current_time = int(time.time() * 1000)
+
+    if record:
+        record.config_json = json.dumps(config_data, ensure_ascii=False)
+        record.updated_at = current_time
+    else:
+        record = SceneConfigRecord(
+            device_id=device_id,
+            config_json=json.dumps(config_data, ensure_ascii=False),
+            updated_at=current_time
+        )
+        db.add(record)
+
+    db.commit()
+
+    print(
+        f"[CONFIG] 安全区域配置已下发："
+        f"device_id={device_id}, "
+        f"request_id={request_id}, "
+        f"zone_count={len(normalized_zones)}"
+    )
+
+    return {
+        "code": 200,
+        "message": "安全区域配置已下发",
+        "data": {
+            "device_id": device_id,
+            "request_id": request_id,
+            "zone_count": len(normalized_zones)
+        }
+    }
 
 @app.patch("/api/alerts/{event_id}/status")
 async def update_alert_status(
