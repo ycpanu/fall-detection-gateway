@@ -661,6 +661,124 @@ async def update_safe_zones(
         }
     }
 
+@app.post("/api/device/{device_id}/live/start")
+async def start_device_live(
+    device_id: str,
+    request: LiveCommand,
+    db: Session = Depends(get_db)
+):
+    global mqtt_client
+
+    if not request.rtmp_url.startswith("rtmp://"):
+        return {
+            "code": 400,
+            "message": "rtmp_url 格式错误"
+        }
+
+    device = (
+        db.query(DeviceRecord)
+        .filter(DeviceRecord.device_id == device_id)
+        .first()
+    )
+
+    if not device:
+        return {
+            "code": 404,
+            "message": "设备不存在"
+        }
+
+    current_time = int(time.time() * 1000)
+
+    if current_time - device.last_online_time > 30000:
+        return {
+            "code": 409,
+            "message": "设备当前离线，无法启动实时视频"
+        }
+
+    if mqtt_client is None or not mqtt_client.is_connected():
+        return {
+            "code": 503,
+            "message": "MQTT Broker 当前不可用"
+        }
+
+    topic = f"fall_detection/commands/{device_id}"
+
+    command = {
+        "cmd": "start_live",
+        "rtmp_url": request.rtmp_url
+    }
+
+    result = mqtt_client.publish(
+        topic,
+        json.dumps(command, ensure_ascii=False),
+        qos=1,
+        retain=False
+    )
+
+    if result.rc != mqtt.MQTT_ERR_SUCCESS:
+        return {
+            "code": 500,
+            "message": "实时视频启动指令发送失败"
+        }
+
+    print(
+        f"[LIVE] 已发送启动实时视频指令："
+        f"device_id={device_id}, "
+        f"rtmp_url={request.rtmp_url}"
+    )
+
+    return {
+        "code": 200,
+        "message": "实时视频启动指令已发送",
+        "data": {
+            "device_id": device_id,
+            "rtmp_url": request.rtmp_url
+        }
+    }
+
+
+@app.post("/api/device/{device_id}/live/stop")
+async def stop_device_live(device_id: str):
+    global mqtt_client
+
+    if mqtt_client is None or not mqtt_client.is_connected():
+        return {
+            "code": 503,
+            "message": "MQTT Broker 当前不可用"
+        }
+
+    topic = f"fall_detection/commands/{device_id}"
+
+    command = {
+        "cmd": "stop_live"
+    }
+
+    result = mqtt_client.publish(
+        topic,
+        json.dumps(command, ensure_ascii=False),
+        qos=1,
+        retain=False
+    )
+
+    if result.rc != mqtt.MQTT_ERR_SUCCESS:
+        return {
+            "code": 500,
+            "message": "实时视频停止指令发送失败"
+        }
+
+    print(
+        f"[LIVE] 已发送停止实时视频指令："
+        f"device_id={device_id}"
+    )
+
+    return {
+        "code": 200,
+        "message": "实时视频停止指令已发送",
+        "data": {
+            "device_id": device_id
+        }
+    }
+
 @app.patch("/api/alerts/{event_id}/status")
 async def update_alert_status(
     event_id: str,
