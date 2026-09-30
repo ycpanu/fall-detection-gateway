@@ -138,3 +138,23 @@ target_link_options(
     PRIVATE
     "-Wl,-rpath-link,${SHERPA_ONNX_LIB_DIR}"
 )
+
+# ==============================
+# 安全区域 / 跌倒规则自动化测试
+# ==============================
+
+add_executable(
+    safe_zone_rule_test
+    tests/safe_zone_rule_test.cpp
+    src/vision/FallRuleEngine.cpp
+    src/vision/SafeZoneManager.cpp
+    src/utils/SysLogger.cpp
+)
+
+target_link_libraries(
+    safe_zone_rule_test
+    PRIVATE
+    spdlog::spdlog
+    ${OpenCV_LIBS}
+    Threads::Threads
+)

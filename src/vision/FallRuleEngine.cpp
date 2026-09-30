@@ -533,60 +533,52 @@ namespace fall_detection
             {
                 case FallState::NORMAL:
                 {
-                    if (
-                        personState.fastDropDetected &&
-                        angle >
-                            config_.
-                            recoveryAngleThreshold)
+                    if (inSafeLieZone && isLying)
                     {
-                        personState.state =
-                            FallState::SUSPECTED_FALL;
-
-                        personState.
-                            suspectedStartTime =
-                            now;
-
+                        personState.fastDropDetected = false;
+                        personState.lieTimerActive = false;
 
                         LOG_INFO(
-                            "[FallRule][Track {}] "
-                            "NORMAL -> SUSPECTED_FALL "
-                            "angle={:.1f}, hipV={:.2f}, "
-                            "centerV={:.2f}",
+                            "[FallRule][Track {}] 安全区域内躺卧，抑制跌倒判定 angle={:.1f}, overlap={:.2f}",
+                            trackId,
+                            angle,
+                            overlapRatio
+                        );
+
+                        break;
+                    }
+
+                    if (!inSafeLieZone &&
+                        personState.fastDropDetected &&
+                        angle > config_.recoveryAngleThreshold)
+                    {
+                        personState.state = FallState::SUSPECTED_FALL;
+                        personState.suspectedStartTime = now;
+
+                        LOG_INFO(
+                            "[FallRule][Track {}] NORMAL -> SUSPECTED_FALL angle={:.1f}, hipV={:.2f}, centerV={:.2f}",
                             trackId,
                             angle,
                             normalizedHipVelocity,
                             normalizedCenterVelocity
                         );
                     }
-                    else if (
-                        isLying &&
-                        !inSafeLieZone &&
-                        personState.lieTimerActive)
+                    else if (isLying &&
+                            !inSafeLieZone &&
+                            personState.lieTimerActive)
                     {
                         const auto lieDuration =
-                            std::chrono::duration_cast<
-                                std::chrono::milliseconds
-                            >(
-                                now -
-                                personState.lieStartTime
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                now - personState.lieStartTime
                             ).count();
 
-
-                        if (lieDuration >=
-                            config_.
-                            staticLieConfirmMs)
+                        if (lieDuration >= config_.staticLieConfirmMs)
                         {
-                            personState.state =
-                                FallState::
-                                CONFIRMED_FALL;
-
-                            confirmedThisFrame =
-                                true;
-
+                            personState.state = FallState::CONFIRMED_FALL;
+                            confirmedThisFrame = true;
 
                             LOG_WARN(
-                                "[FallRule][Track {}] "
-                                "静态异常躺卧确认",
+                                "[FallRule][Track {}] 静态异常躺卧确认",
                                 trackId
                             );
                         }
@@ -598,52 +590,44 @@ namespace fall_detection
 
                 case FallState::SUSPECTED_FALL:
                 {
-                    if (isRecovered)
+                    if (inSafeLieZone && isLying)
                     {
                         LOG_INFO(
-                            "[FallRule][Track {}] "
-                            "SUSPECTED_FALL -> NORMAL",
-                            trackId
+                            "[FallRule][Track {}] 疑似跌倒最终进入安全区域，SUSPECTED_FALL -> NORMAL overlap={:.2f}",
+                            trackId,
+                            overlapRatio
                         );
 
-
-                        resetPersonToNormal(
-                            personState
-                        );
-
+                        resetPersonToNormal(personState);
                         break;
                     }
 
+                    if (isRecovered)
+                    {
+                        LOG_INFO(
+                            "[FallRule][Track {}] SUSPECTED_FALL -> NORMAL",
+                            trackId
+                        );
+
+                        resetPersonToNormal(personState);
+                        break;
+                    }
 
                     const auto duration =
-                        std::chrono::duration_cast<
-                            std::chrono::milliseconds
-                        >(
-                            now -
-                            personState.
-                                suspectedStartTime
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now - personState.suspectedStartTime
                         ).count();
 
-
-                    if (
-                        isLying &&
-                        duration >=
-                            config_.suspectConfirmMs)
+                    if (isLying &&
+                        !inSafeLieZone &&
+                        duration >= config_.suspectConfirmMs)
                     {
-                        personState.state =
-                            FallState::
-                            CONFIRMED_FALL;
-
-                        confirmedThisFrame =
-                            true;
+                        personState.state = FallState::CONFIRMED_FALL;
+                        confirmedThisFrame = true;
                     }
-                    else if (
-                        duration >
-                        config_.fallEventWindowMs)
+                    else if (duration > config_.fallEventWindowMs)
                     {
-                        resetPersonToNormal(
-                            personState
-                        );
+                        resetPersonToNormal(personState);
                     }
 
                     break;
