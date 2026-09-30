@@ -472,10 +472,14 @@ async def get_dashboard(db: Session = Depends(get_db)):
         "data": {
             "online_gateways": online_count,
             "today_alerts": today_alerts,
+            "today_fall_alerts": today_fall_alerts,
+            "today_help_alerts": today_help_alerts,
             "pending_alerts": pending_alerts,
             "memory_usage": memory_usage,
             "storage_usage": storage_usage,
-            "trend_7_days": trend_data
+            "trend_7_days": trend_data,
+            "fall_trend_7_days": fall_trend_data,
+            "help_trend_7_days": help_trend_data
         }
     }
 
