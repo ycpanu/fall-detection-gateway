@@ -1,32 +1,40 @@
-#include <opencv2/videoio.hpp>
-#include <cstdlib>
-#include <cstdio>
-#include <filesystem>
-
 #include "fall-detection/vision/VideoCacher.hpp"
 #include "fall-detection/utils/SysLogger.hpp"
-#include "fall-detection/utils/ConfigManager.hpp"
+
+#include <cstdio>
+#include <filesystem>
+#include <utility>
 
 namespace fall_detection
 {
     namespace vision
     {
-        VideoCacher::VideoCacher(int maxFrames) 
-            : maxFrame_(maxFrames), isRunning_(true)
+
+        VideoCacher::VideoCacher(int maxFrames)
+            : maxFrame_(maxFrames),
+            isRunning_(true)
         {
-            // 启动单例常驻编码线程
-            workerThread_ = std::thread(&VideoCacher::encodingWorkerLoop, this);
+            workerThread_ = std::thread(
+                &VideoCacher::encodingWorkerLoop,
+                this
+            );
         }
 
         VideoCacher::~VideoCacher()
         {
-            // 优雅停止并等待后台编码线程写完最后一个视频
             isRunning_ = false;
-            cv_.notify_one();
+            cv_.notify_all();
+
             if (workerThread_.joinable())
             {
                 workerThread_.join();
             }
+        }
+
+        void VideoCacher::setVideoReadyCallback(
+            VideoReadyCallback callback)
+        {
+            videoReadyCallback_ = std::move(callback);
         }
 
         void VideoCacher::pushFrame(const cv::Mat& frame)
@@ -39,21 +47,29 @@ namespace fall_detection
                 cv::Mat cachedFrame = frame.clone();
                 buffer_.push_back(cachedFrame);
 
-                if (buffer_.size() > maxFrame_)
+                if (buffer_.size() > static_cast<std::size_t>(maxFrame_))
+                {
                     buffer_.pop_front();
+                }
 
-                for (auto it = pendingRecords_.begin(); it != pendingRecords_.end();)
+                for (auto it = pendingRecords_.begin();
+                    it != pendingRecords_.end();)
                 {
                     it->frames.push_back(cachedFrame);
                     --it->remainingPostFrames;
 
                     if (it->remainingPostFrames <= 0)
                     {
-                        completedTasks.push_back({
-                            std::move(it->frames),
-                            it->outputPath,
-                            it->fps
-                        });
+                        VideoTask task;
+
+                        task.frames = std::move(it->frames);
+                        task.eventId = it->eventId;
+                        task.outputPath = it->outputPath;
+                        task.fps = it->fps;
+
+                        completedTasks.push_back(
+                            std::move(task)
+                        );
 
                         it = pendingRecords_.erase(it);
                     }
@@ -70,45 +86,78 @@ namespace fall_detection
                     std::lock_guard<std::mutex> lock(queueMtx_);
 
                     for (auto& task : completedTasks)
-                        taskQueue_.push(std::move(task));
+                    {
+                        taskQueue_.push(
+                            std::move(task)
+                        );
+                    }
                 }
 
                 cv_.notify_one();
             }
         }
 
-        void VideoCacher::saveVideoAsync(const std::string& outputPath, int fps, int postFrames)
+        void VideoCacher::saveVideoAsync(
+            const std::string& eventId,
+            const std::string& outputPath,
+            int fps,
+            int postFrames)
         {
             std::deque<cv::Mat> snapshot;
 
             {
                 std::lock_guard<std::mutex> lock(bufferMtx_);
+
                 snapshot = buffer_;
 
                 if (snapshot.empty())
                 {
-                    LOG_WARN("视频缓存区为空，无法生成事件视频！");
+                    LOG_WARN(
+                        "[VideoCacher] 视频缓存为空，无法生成事件视频：event_id={}",
+                        eventId
+                    );
+
                     return;
                 }
 
                 if (postFrames > 0)
                 {
                     PendingVideoRecord record;
+
                     record.frames = std::move(snapshot);
+                    record.eventId = eventId;
                     record.outputPath = outputPath;
                     record.fps = fps;
                     record.remainingPostFrames = postFrames;
 
-                    pendingRecords_.push_back(std::move(record));
+                    pendingRecords_.push_back(
+                        std::move(record)
+                    );
 
-                    LOG_INFO("已锁定报警前 {} 帧，继续采集报警后 {} 帧", buffer_.size(), postFrames);
+                    LOG_INFO(
+                        "[VideoCacher] 已锁定报警前 {} 帧，继续采集报警后 {} 帧：event_id={}",
+                        buffer_.size(),
+                        postFrames,
+                        eventId
+                    );
+
                     return;
                 }
             }
 
+            VideoTask task;
+
+            task.frames = std::move(snapshot);
+            task.eventId = eventId;
+            task.outputPath = outputPath;
+            task.fps = fps;
+
             {
                 std::lock_guard<std::mutex> lock(queueMtx_);
-                taskQueue_.push({std::move(snapshot), outputPath, fps});
+
+                taskQueue_.push(
+                    std::move(task)
+                );
             }
 
             cv_.notify_one();
@@ -116,56 +165,126 @@ namespace fall_detection
 
         void VideoCacher::encodingWorkerLoop()
         {
-            while (isRunning_)
+            while (true)
             {
                 VideoTask task;
-                
-                // 3. 阻塞等待编码任务，零 CPU 消耗
+
                 {
                     std::unique_lock<std::mutex> lock(queueMtx_);
-                    cv_.wait(lock, [this]() { return !taskQueue_.empty() || !isRunning_; });
+
+                    cv_.wait(
+                        lock,
+                        [this]()
+                        {
+                            return !taskQueue_.empty() ||
+                                !isRunning_;
+                        }
+                    );
 
                     if (!isRunning_ && taskQueue_.empty())
                     {
                         break;
                     }
 
-                    task = std::move(taskQueue_.front());
+                    task = std::move(
+                        taskQueue_.front()
+                    );
+
                     taskQueue_.pop();
                 }
 
-                // 4. 耗时编码操作在锁外执行，绝不阻塞主摄像头抓图流水线
+                if (task.frames.empty())
+                {
+                    LOG_WARN(
+                        "[VideoCacher] 编码任务没有视频帧：event_id={}",
+                        task.eventId
+                    );
+
+                    continue;
+                }
+
                 int width = task.frames.front().cols;
                 int height = task.frames.front().rows;
+
                 width -= width % 2;
                 height -= height % 2;
-                cv::Size size(width, height);
 
-                std::filesystem::path outputPath(task.outputPath);
+                if (width <= 0 || height <= 0)
+                {
+                    LOG_ERROR(
+                        "[VideoCacher] 视频尺寸无效：event_id={}, width={}, height={}",
+                        task.eventId,
+                        width,
+                        height
+                    );
+
+                    continue;
+                }
+
+                const cv::Size outputSize(
+                    width,
+                    height
+                );
+
+                std::filesystem::path outputPath(
+                    task.outputPath
+                );
 
                 if (outputPath.has_parent_path())
                 {
-                    std::filesystem::create_directories(outputPath.parent_path());
+                    std::error_code ec;
+
+                    std::filesystem::create_directories(
+                        outputPath.parent_path(),
+                        ec
+                    );
+
+                    if (ec)
+                    {
+                        LOG_ERROR(
+                            "[VideoCacher] 创建视频目录失败：path={}, error={}",
+                            outputPath.parent_path().string(),
+                            ec.message()
+                        );
+
+                        continue;
+                    }
                 }
 
-                std::string command =
+                const std::string command =
                     "ffmpeg -y -loglevel error "
                     "-f rawvideo "
                     "-pix_fmt bgr24 "
-                    "-s " + std::to_string(width) + "x" + std::to_string(height) + " "
-                    "-r " + std::to_string(task.fps) + " "
+                    "-s " +
+                    std::to_string(width) +
+                    "x" +
+                    std::to_string(height) +
+                    " "
+                    "-r " +
+                    std::to_string(task.fps) +
+                    " "
                     "-i - "
                     "-an "
                     "-vf format=nv12 "
                     "-c:v h264_rkmpp "
                     "-movflags +faststart "
-                    "\"" + task.outputPath + "\"";
+                    "\"" +
+                    task.outputPath +
+                    "\"";
 
-                FILE* pipe = popen(command.c_str(), "w");
+                FILE* pipe = popen(
+                    command.c_str(),
+                    "w"
+                );
 
                 if (!pipe)
                 {
-                    LOG_ERROR("无法启动 FFmpeg 硬件编码器：{}", task.outputPath);
+                    LOG_ERROR(
+                        "[VideoCacher] 无法启动 FFmpeg：event_id={}, path={}",
+                        task.eventId,
+                        task.outputPath
+                    );
+
                     continue;
                 }
 
@@ -175,57 +294,80 @@ namespace fall_detection
                 {
                     cv::Mat outputFrame;
 
-                    if (frame.cols != width || frame.rows != height)
-                        cv::resize(frame, outputFrame, size);
+                    if (frame.cols != width ||
+                        frame.rows != height)
+                    {
+                        cv::resize(
+                            frame,
+                            outputFrame,
+                            outputSize
+                        );
+                    }
                     else
+                    {
                         outputFrame = frame;
+                    }
 
                     if (!outputFrame.isContinuous())
-                        outputFrame = outputFrame.clone();
+                    {
+                        outputFrame =
+                            outputFrame.clone();
+                    }
 
-                    size_t frameBytes = outputFrame.total() * outputFrame.elemSize();
+                    const std::size_t frameBytes =
+                        outputFrame.total() *
+                        outputFrame.elemSize();
 
-                    size_t written = fwrite(
-                        outputFrame.data,
-                        1,
-                        frameBytes,
-                        pipe
-                    );
+                    const std::size_t written =
+                        fwrite(
+                            outputFrame.data,
+                            1,
+                            frameBytes,
+                            pipe
+                        );
 
                     if (written != frameBytes)
                     {
-                        LOG_ERROR("向 FFmpeg 写入视频帧失败");
+                        LOG_ERROR(
+                            "[VideoCacher] 向 FFmpeg 写入视频帧失败：event_id={}",
+                            task.eventId
+                        );
+
                         writeOk = false;
                         break;
                     }
                 }
 
-                int ffmpegRet = pclose(pipe);
+                const int ffmpegRet =
+                    pclose(pipe);
 
-                if (!writeOk || ffmpegRet != 0)
+                if (!writeOk ||
+                    ffmpegRet != 0)
                 {
-                    LOG_ERROR("FFmpeg 硬件编码失败：{}", task.outputPath);
+                    LOG_ERROR(
+                        "[VideoCacher] 视频硬件编码失败：event_id={}, path={}",
+                        task.eventId,
+                        task.outputPath
+                    );
+
                     continue;
                 }
 
-                LOG_INFO("事件视频硬件编码完成：{}", task.outputPath);
+                LOG_INFO(
+                    "[VideoCacher] 事件视频编码完成：event_id={}, path={}",
+                    task.eventId,
+                    task.outputPath
+                );
 
-                // 利用 curl 后台上传视频到云端
-                std::string serverUrl = utils::ConfigManager::getInstance().getString("network.api_base_url", "http://10.48.212.22:8000");
-                // 构建上传命令：curl -s -X POST -F "file=@videos/fall_xxx.mp4" http://ip:8000/api/upload/video
-                std::string uploadCmd = "curl -sS --fail -X POST -F \"file=@" + task.outputPath + "\" " + serverUrl + "/api/upload/video";
-                
-                LOG_INFO("正在后台上传短视频到云端: {}", task.outputPath);
-                int uploadRet = std::system(uploadCmd.c_str());
-                if (uploadRet == 0)
+                if (videoReadyCallback_)
                 {
-                    LOG_INFO("现场短视频上传云端成功！");
-                }
-                else
-                {
-                    LOG_ERROR("短视频上传失败！可能网络断开，视频已保留在本地。");
+                    videoReadyCallback_(
+                        task.eventId,
+                        task.outputPath
+                    );
                 }
             }
         }
+
     }
 }

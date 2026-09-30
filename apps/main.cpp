@@ -30,6 +30,7 @@
 #include "fall-detection/audio/AudioCapture.hpp"
 #include "fall-detection/audio/KeywordSpotter.hpp"
 #include "fall-detection/utils/SystemMonitor.hpp"
+#include "fall-detection/network/VideoUploader.hpp"
 
 // #include <syslog.h>
 
@@ -86,6 +87,17 @@ int main(int argc, char* argv[])
     {
         LOG_CRITICAL("【降级警告】本地 SQLite 容灾数据库初始化失败！断网时报警数据将面临丢失风险！");
     }
+
+    network::VideoUploader videoUploader(
+        localDb,
+        config.getString(
+            "network.api_base_url",
+            "http://192.168.137.1:8000"
+        ),
+        5
+    );
+
+    videoUploader.start();
 
     const std::string sceneConfigPath = "configs/scene_config.json";
 
@@ -289,6 +301,18 @@ int main(int argc, char* argv[])
     concurrency::ThreadSafeQueue<vision::AlertEvent> alertQueue(config.getAlertQueueSize());
     vision::VideoCacher videoCacher(config.getVideoCacheFrames());
 
+    videoCacher.setVideoReadyCallback([&](const std::string& eventId,
+        const std::string& videoPath)
+        {
+            if (localDb.markVideoPending(
+                    eventId,
+                    videoPath))
+            {
+                videoUploader.notifyNewTask();
+            }
+        }
+    );
+
     if (kwsAvailable)
     {
         audio::AudioCaptureConfig audioConfig;
@@ -405,31 +429,18 @@ int main(int argc, char* argv[])
                 buzzer.triggerAlarm(config.getAlarmDurationMs());
             }
 
-            // 2. 现场视频
-            // 只有包含视觉跌倒时才录像：
-            if (alertEvent.captureVideo)
+            // 2. 先确定录像路径
+            if (alertEvent.captureVideo &&
+                alertEvent.videoPath.empty())
             {
-                if (alertEvent.videoPath.empty())
-                {
-                    alertEvent.videoPath = config.getVideoOutputDir() + "/fall_" + alertEvent.eventId + ".mp4";
-                }
-
-                LOG_INFO(
-                    "[Alert] 启动事件录像：event_id={}, path={}",
-                    alertEvent.eventId,
-                    alertEvent.videoPath
-                );
-
-                // 这里保持你目前已经实现成功的
-                // “预录约3秒 + 后录约5秒”调用方式。
-                videoCacher.saveVideoAsync(alertEvent.videoPath,config.getVideoSaveFps());
+                alertEvent.videoPath =
+                    config.getVideoOutputDir() +
+                    "/fall_" +
+                    alertEvent.eventId +
+                    ".mp4";
             }
 
             // 3. Local First
-            // 不管网络是否正常，报警首先写入 SQLite。
-            // saveAlert 内部使用 event_id UPSERT：
-            // 第一次事件 -> INSERT PENDING
-            // 融合事件   -> UPDATE 同一 event_id，重新 PENDING
             if (!localDb.saveAlert(alertEvent))
             {
                 LOG_ERROR(
@@ -438,7 +449,23 @@ int main(int argc, char* argv[])
                 );
             }
 
-            // 4. 当前网络在线则立即尝试上传
+            // 4. 开始异步录像
+            if (alertEvent.captureVideo)
+            {
+                LOG_INFO(
+                    "[Alert] 启动事件录像：event_id={}, path={}",
+                    alertEvent.eventId,
+                    alertEvent.videoPath
+                );
+
+                videoCacher.saveVideoAsync(
+                    alertEvent.eventId,
+                    alertEvent.videoPath,
+                    config.getVideoSaveFps()
+                );
+            }
+
+            // 5. MQTT 上传报警信息
             if (mqttClient.isConnected())
             {
                 LOG_INFO(
@@ -780,6 +807,10 @@ int main(int argc, char* argv[])
         retryThread.join();
     }
     LOG_INFO("[Shutdown] retryThread 已退出");
+
+    LOG_INFO("[Shutdown] 正在停止 VideoUploader...");
+    videoUploader.stop();
+    LOG_INFO("[Shutdown] VieoUploader 已停止");
     LOG_INFO("[Shutdown] 正在断开 MQTT...");
     mqttClient.disconnect();
     LOG_INFO("[Shutdown] MQTT 已断开");

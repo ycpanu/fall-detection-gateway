@@ -4,7 +4,7 @@ import os
 import shutil
 import uuid
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, UploadFile, File, Request
+from fastapi import FastAPI, Depends, UploadFile, File, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -835,40 +835,66 @@ async def update_alert_status(
     }
 
 @app.post("/api/upload/video")
-async def upload_video(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_video(
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
     filename = os.path.basename(file.filename)
-    save_path = os.path.join(VIDEO_DIR, filename)
 
-    with open(save_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    if not filename.startswith("fall_") or not filename.endswith(".mp4"):
+        raise HTTPException(
+            status_code=400,
+            detail="视频文件名格式错误"
+        )
 
-    # 文件名格式：fall_<event_id>.mp4
-    event_id = ""
-
-    if filename.startswith("fall_") and filename.endswith(".mp4"):
-        event_id = filename[5:-4]
+    event_id = filename[5:-4]
 
     if not event_id:
-        return {
-            "code": 400,
-            "message": "无法从视频文件名解析 event_id"
-        }
+        raise HTTPException(
+            status_code=400,
+            detail="无法从视频文件名解析 event_id"
+        )
 
-    alert = db.query(AlertRecord).filter(AlertRecord.event_id == event_id).first()
+    alert = db.query(AlertRecord).filter(
+        AlertRecord.event_id == event_id
+    ).first()
 
     if not alert:
-        return {
-            "code": 404,
-            "message": f"未找到对应报警事件：{event_id}"
-        }
+        raise HTTPException(
+            status_code=404,
+            detail=f"未找到对应报警事件：{event_id}"
+        )
 
-    base_url = str(request.base_url).rstrip("/")
-    video_url = f"{base_url}/videos/{filename}"
+    save_path = os.path.join(
+        VIDEO_DIR,
+        filename
+    )
+
+    with open(save_path, "wb") as buffer:
+        shutil.copyfileobj(
+            file.file,
+            buffer
+        )
+
+    base_url = str(
+        request.base_url
+    ).rstrip("/")
+
+    video_url = (
+        f"{base_url}/videos/{filename}"
+    )
 
     alert.video_url = video_url
-    db.commit()
 
-    print(f"[VIDEO] 视频已关联报警：event_id={event_id}, url={video_url}")
+    db.commit()
+    db.refresh(alert)
+
+    print(
+        f"[VIDEO] 视频已关联报警："
+        f"event_id={event_id}, "
+        f"url={video_url}"
+    )
 
     return {
         "code": 200,

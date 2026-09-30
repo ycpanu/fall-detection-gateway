@@ -1,30 +1,34 @@
 #pragma once
 
-#include <opencv2/opencv.hpp>
+#include <atomic>
+#include <condition_variable>
 #include <deque>
-#include <queue>
+#include <functional>
 #include <mutex>
+#include <queue>
 #include <string>
 #include <thread>
-#include <atomic>
 #include <vector>
-#include <condition_variable>
+
+#include <opencv2/opencv.hpp>
 
 namespace fall_detection
 {
     namespace vision
     {
-        // 视频编码异步任务包
-        struct VideoTask 
+
+        struct VideoTask
         {
             std::deque<cv::Mat> frames;
+            std::string eventId;
             std::string outputPath;
-            int fps;
+            int fps = 30;
         };
 
         struct PendingVideoRecord
         {
             std::deque<cv::Mat> frames;
+            std::string eventId;
             std::string outputPath;
             int fps = 30;
             int remainingPostFrames = 0;
@@ -32,29 +36,47 @@ namespace fall_detection
 
         class VideoCacher
         {
-            public:
-                VideoCacher(int maxFrames = 90);
-                ~VideoCacher();
+        public:
+            using VideoReadyCallback =
+                std::function<void(
+                    const std::string& eventId,
+                    const std::string& outputPath
+                )>;
 
-                void pushFrame(const cv::Mat& frame);
-                void saveVideoAsync(const std::string& outputPath, int fps = 30, int postFrames = 0);
-            
-            private:
-                // 常驻后台编码工作线程
-                void encodingWorkerLoop();
+            explicit VideoCacher(int maxFrames = 90);
+            ~VideoCacher();
 
-            private:
-                int maxFrame_;
-                std::deque<cv::Mat> buffer_;
-                std::mutex bufferMtx_;
+            void pushFrame(const cv::Mat& frame);
 
-                // 异步任务队列与线程同步原语
-                std::queue<VideoTask> taskQueue_;
-                std::mutex queueMtx_;
-                std::condition_variable cv_;
-                std::thread workerThread_;
-                std::atomic<bool> isRunning_{false};
-                std::vector<PendingVideoRecord> pendingRecords_;
+            void saveVideoAsync(
+                const std::string& eventId,
+                const std::string& outputPath,
+                int fps = 30,
+                int postFrames = 0
+            );
+
+            void setVideoReadyCallback(VideoReadyCallback callback);
+
+        private:
+            void encodingWorkerLoop();
+
+        private:
+            int maxFrame_;
+
+            std::deque<cv::Mat> buffer_;
+            std::mutex bufferMtx_;
+
+            std::queue<VideoTask> taskQueue_;
+            std::mutex queueMtx_;
+            std::condition_variable cv_;
+
+            std::thread workerThread_;
+            std::atomic<bool> isRunning_{false};
+
+            std::vector<PendingVideoRecord> pendingRecords_;
+
+            VideoReadyCallback videoReadyCallback_;
         };
+
     }
 }
