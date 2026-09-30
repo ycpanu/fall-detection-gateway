@@ -59,13 +59,76 @@ namespace fall_detection
                 "keyword TEXT DEFAULT '', "
                 "video_path TEXT DEFAULT '', "
                 "event_status TEXT NOT NULL, "
-                "upload_status TEXT NOT NULL DEFAULT 'pending'"
+                "upload_status TEXT NOT NULL DEFAULT 'PENDING', "
+                "video_upload_status TEXT NOT NULL DEFAULT 'NONE', "
+                "video_retry_count INTEGER NOT NULL DEFAULT 0"
                 ");";
 
             if (!executeSQL(createTableSQL))
             {
                 LOG_ERROR("创建本地数据库表失败！");
                 return false;
+            }
+
+            auto columnExists = [this](const std::string& columnName)
+            {
+                sqlite3_stmt* stmt = nullptr;
+
+                if (sqlite3_prepare_v2(
+                        db_,
+                        "PRAGMA table_info(alerts);",
+                        -1,
+                        &stmt,
+                        nullptr) != SQLITE_OK)
+                {
+                    return false;
+                }
+
+                bool found = false;
+
+                while (sqlite3_step(stmt) == SQLITE_ROW)
+                {
+                    const unsigned char* name = sqlite3_column_text(stmt, 1);
+
+                    if (name &&
+                        columnName ==
+                            reinterpret_cast<const char*>(name))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                sqlite3_finalize(stmt);
+                return found;
+            };
+
+            if (!columnExists("video_upload_status"))
+            {
+                if (!executeSQL(
+                        "ALTER TABLE alerts "
+                        "ADD COLUMN video_upload_status "
+                        "TEXT NOT NULL DEFAULT 'NONE';"))
+                {
+                    LOG_ERROR("数据库迁移失败：无法增加 video_upload_status");
+                    return false;
+                }
+
+                LOG_INFO("数据库迁移完成：新增 video_upload_status");
+            }
+
+            if (!columnExists("video_retry_count"))
+            {
+                if (!executeSQL(
+                        "ALTER TABLE alerts "
+                        "ADD COLUMN video_retry_count "
+                        "INTEGER NOT NULL DEFAULT 0;"))
+                {
+                    LOG_ERROR("数据库迁移失败：无法增加 video_retry_count");
+                    return false;
+                }
+
+                LOG_INFO("数据库迁移完成：新增 video_retry_count");
             }
 
             isInitialized_ = true;
@@ -487,6 +550,55 @@ namespace fall_detection
             return true;
         }
 
+        bool LocalDatabase::markVideoPending(const std::string& eventId,const std::string& videoPath)
+        {
+            if (!isInitialized_)
+                return false;
+
+            auto escapeSql = [](const std::string& value)
+            {
+                std::string result;
+
+                for (char ch : value)
+                {
+                    if (ch == '\'')
+                        result += "''";
+                    else
+                        result += ch;
+                }
+
+                return result;
+            };
+
+            const std::string safeEventId =
+                escapeSql(eventId);
+
+            const std::string safeVideoPath =
+                escapeSql(videoPath);
+
+            std::string sql =
+                "UPDATE alerts SET "
+                "video_path = '" + safeVideoPath + "', "
+                "video_upload_status = 'PENDING', "
+                "video_retry_count = 0 "
+                "WHERE event_id = '" + safeEventId + "';";
+
+            {
+                std::lock_guard<std::mutex> lock(queueMtx_);
+                sqlQueue_.push(std::move(sql));
+            }
+
+            cv_.notify_one();
+
+            LOG_INFO(
+                "[VideoUpload] 视频进入待上传状态：event_id={}, path={}",
+                eventId,
+                videoPath
+            );
+
+            return true;
+        }
+
         void LocalDatabase::dbWorkerLoop()
         {
             while (isRunning_)
@@ -510,6 +622,138 @@ namespace fall_detection
                 // 2. 在锁外执行极其耗时的底层磁盘 I/O 写入
                 executeSQL(sql);
             }
+        }
+
+        std::vector<PendingVideoUpload>
+        LocalDatabase::getPendingVideos()
+        {
+            std::vector<PendingVideoUpload> videos;
+
+            if (!isInitialized_)
+                return videos;
+
+            const char* sql =
+                "SELECT event_id, video_path, video_retry_count "
+                "FROM alerts "
+                "WHERE video_upload_status = 'PENDING' "
+                "AND video_path <> '' "
+                "ORDER BY id ASC;";
+
+            sqlite3_stmt* stmt = nullptr;
+
+            if (sqlite3_prepare_v2(
+                    db_,
+                    sql,
+                    -1,
+                    &stmt,
+                    nullptr) != SQLITE_OK)
+            {
+                LOG_ERROR(
+                    "[VideoUpload] 查询待上传视频失败：{}",
+                    sqlite3_errmsg(db_)
+                );
+
+                return videos;
+            }
+
+            while (sqlite3_step(stmt) == SQLITE_ROW)
+            {
+                PendingVideoUpload video;
+
+                const unsigned char* eventId =
+                    sqlite3_column_text(stmt, 0);
+
+                const unsigned char* videoPath =
+                    sqlite3_column_text(stmt, 1);
+
+                video.eventId =
+                    eventId
+                        ? reinterpret_cast<const char*>(eventId)
+                        : "";
+
+                video.videoPath =
+                    videoPath
+                        ? reinterpret_cast<const char*>(videoPath)
+                        : "";
+
+                video.retryCount =
+                    sqlite3_column_int(stmt, 2);
+
+                videos.push_back(std::move(video));
+            }
+
+            sqlite3_finalize(stmt);
+
+            return videos;
+        }
+
+        bool LocalDatabase::markVideoUploaded(const std::string& eventId)
+        {
+            if (!isInitialized_)
+                return false;
+
+            std::string safeEventId;
+
+            for (char ch : eventId)
+            {
+                if (ch == '\'')
+                    safeEventId += "''";
+                else
+                    safeEventId += ch;
+            }
+
+            std::string sql =
+                "UPDATE alerts SET "
+                "video_upload_status = 'UPLOADED' "
+                "WHERE event_id = '" +
+                safeEventId +
+                "';";
+
+            {
+                std::lock_guard<std::mutex> lock(queueMtx_);
+                sqlQueue_.push(std::move(sql));
+            }
+
+            cv_.notify_one();
+
+            LOG_INFO(
+                "[VideoUpload] 视频已标记上传完成：event_id={}",
+                eventId
+            );
+
+            return true;
+        }
+
+        bool LocalDatabase::incrementVideoRetry(const std::string& eventId)
+        {
+            if (!isInitialized_)
+                return false;
+
+            std::string safeEventId;
+
+            for (char ch : eventId)
+            {
+                if (ch == '\'')
+                    safeEventId += "''";
+                else
+                    safeEventId += ch;
+            }
+
+            std::string sql =
+                "UPDATE alerts SET "
+                "video_retry_count = video_retry_count + 1 "
+                "WHERE event_id = '" +
+                safeEventId +
+                "';";
+
+            {
+                std::lock_guard<std::mutex> lock(queueMtx_);
+                sqlQueue_.push(std::move(sql));
+            }
+
+            cv_.notify_one();
+
+            return true;
         }
     }
 }
