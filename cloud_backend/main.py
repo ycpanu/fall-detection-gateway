@@ -439,9 +439,12 @@ async def get_alerts(
 
 @app.get("/api/dashboard")
 async def get_dashboard(db: Session = Depends(get_db)):
-    # 1. 动态判断真实在线设备数（30秒内发过心跳算在线）
     current_time = int(time.time() * 1000)
-    online_devices = db.query(DeviceRecord).filter(current_time - DeviceRecord.last_online_time <= 30000).all()
+
+    online_devices = db.query(DeviceRecord).filter(
+        current_time - DeviceRecord.last_online_time <= 30000
+    ).all()
+
     online_count = len(online_devices)
 
     current_device = None
@@ -461,26 +464,60 @@ async def get_dashboard(db: Session = Depends(get_db)):
         current_device.storage_usage
         if current_device else -1
     )
-    
-    # 3. 统计今日报警数与近7天趋势
-    today_start = int(datetime.now().replace(hour=0, minute=0, second=0).timestamp() * 1000)
-    today_alerts = db.query(AlertRecord).filter(AlertRecord.server_receive_time >= today_start).count()
+
+    now = datetime.now()
+
+    today_start = int(
+        now.replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0
+        ).timestamp() * 1000
+    )
+
+    today_alerts = db.query(AlertRecord).filter(
+        AlertRecord.server_receive_time >= today_start
+    ).count()
+
     today_fall_alerts = db.query(AlertRecord).filter(
-    AlertRecord.server_receive_time >= today_start, AlertRecord.event_type == "FALL").count()
+        AlertRecord.server_receive_time >= today_start,
+        AlertRecord.event_type == "FALL"
+    ).count()
 
     today_help_alerts = db.query(AlertRecord).filter(
         AlertRecord.server_receive_time >= today_start,
         AlertRecord.event_type == "HELP_REQUEST"
     ).count()
-    pending_alerts = (db.query(AlertRecord).filter(AlertRecord.status.in_(["NEW", "ACKNOWLEDGED"])).count())
-    
+
+    pending_alerts = db.query(AlertRecord).filter(
+        AlertRecord.status.in_(["NEW", "ACKNOWLEDGED"])
+    ).count()
+
+    trend_dates = []
     trend_data = []
     fall_trend_data = []
     help_trend_data = []
 
     for i in range(6, -1, -1):
-        day_start = int((datetime.now() - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
-        day_end = day_start + 86400000
+        day = now - timedelta(days=i)
+
+        day_start_dt = day.replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0
+        )
+
+        next_day_dt = day_start_dt + timedelta(days=1)
+
+        day_start = int(
+            day_start_dt.timestamp() * 1000
+        )
+
+        day_end = int(
+            next_day_dt.timestamp() * 1000
+        )
 
         total_count = db.query(AlertRecord).filter(
             AlertRecord.server_receive_time >= day_start,
@@ -499,6 +536,10 @@ async def get_dashboard(db: Session = Depends(get_db)):
             AlertRecord.event_type == "HELP_REQUEST"
         ).count()
 
+        trend_dates.append(
+            day_start_dt.strftime("%m-%d")
+        )
+
         trend_data.append(total_count)
         fall_trend_data.append(fall_count)
         help_trend_data.append(help_count)
@@ -513,6 +554,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
             "pending_alerts": pending_alerts,
             "memory_usage": memory_usage,
             "storage_usage": storage_usage,
+            "trend_dates": trend_dates,
             "trend_7_days": trend_data,
             "fall_trend_7_days": fall_trend_data,
             "help_trend_7_days": help_trend_data
