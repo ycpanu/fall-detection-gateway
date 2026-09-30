@@ -577,3 +577,88 @@ async def upload_video(request: Request, file: UploadFile = File(...), db: Sessi
         "event_id": event_id,
         "video_url": video_url
     }
+
+@app.post("/api/device/{device_id}/live/start")
+async def start_device_live(device_id: str, command: LiveCommand):
+    global mqtt_client
+
+    if mqtt_client is None:
+        return {
+            "code": 500,
+            "message": "MQTT 客户端未初始化"
+        }
+
+    topic = f"fall_detection/commands/{device_id}"
+
+    payload = {
+        "cmd": "start_live",
+        "rtmp_url": command.rtmp_url
+    }
+
+    try:
+        mqtt_client.publish(
+            topic,
+            json.dumps(payload),
+            qos=1
+        )
+
+        print(
+            f"[LIVE] 已发送开启推流命令："
+            f"device={device_id}, "
+            f"url={command.rtmp_url}"
+        )
+
+        return {
+            "code": 200,
+            "message": "开启实时监控命令已发送"
+        }
+
+    except Exception as e:
+        print(f"[LIVE] 开启推流命令发送失败: {e}")
+
+        return {
+            "code": 500,
+            "message": str(e)
+        }
+
+
+@app.post("/api/device/{device_id}/live/stop")
+async def stop_device_live(device_id: str):
+    global mqtt_client
+
+    if mqtt_client is None:
+        return {
+            "code": 500,
+            "message": "MQTT 客户端未初始化"
+        }
+
+    topic = f"fall_detection/commands/{device_id}"
+
+    payload = {
+        "cmd": "stop_live"
+    }
+
+    try:
+        mqtt_client.publish(
+            topic,
+            json.dumps(payload),
+            qos=1
+        )
+
+        print(
+            f"[LIVE] 已发送停止推流命令："
+            f"device={device_id}"
+        )
+
+        return {
+            "code": 200,
+            "message": "停止实时监控命令已发送"
+        }
+
+    except Exception as e:
+        print(f"[LIVE] 停止推流命令发送失败: {e}")
+
+        return {
+            "code": 500,
+            "message": str(e)
+        }
