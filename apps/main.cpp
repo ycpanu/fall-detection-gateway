@@ -114,101 +114,302 @@ int main(int argc, char* argv[])
     network::LiveStreamer liveStreamer(640, 480, 30);
     network::MqttClient mqttClient(config.getMqttBroker(), config.getDeviceId(), config.getKeepAliveSeconds());
 
+    const std::string cmdTopic =
+        "fall_detection/commands/" +
+        config.getDeviceId();
+
+    const std::string ackTopic =
+        "fall_detection/ack/" +
+        config.getDeviceId();
+
     // 注册 MQTT 信息回调，处理小程序发来的指令
-    mqttClient.setMessageCallback([&](const std::string& topic, const std::string& payload)
-    {
-        try
+    mqttClient.setMessageCallback(
+        [&](const std::string& topic, const std::string& payload)
         {
-            const auto json = nlohmann::json::parse(payload);
-
-            if (!json.contains("cmd") || !json["cmd"].is_string())
+            try
             {
-                LOG_WARN("收到无效 MQTT 指令：缺少 cmd");
-                return;
-            }
+                const auto message = nlohmann::json::parse(payload);
 
-            const std::string cmd = json["cmd"].get<std::string>();
-
-            if (cmd == "start_live")
-            {
-                if (!json.contains("rtmp_url") || !json["rtmp_url"].is_string())
+                // =====================================================
+                // 1. 云端报警业务 ACK
+                // =====================================================
+                if (topic == ackTopic)
                 {
-                    LOG_WARN("start_live 指令缺少 rtmp_url");
+                    const std::string eventId =
+                        message.value("event_id", "");
+
+                    const std::string status =
+                        message.value("status", "");
+
+                    if (eventId.empty())
+                    {
+                        LOG_WARN(
+                            "[AlertACK] 收到 ACK，但 event_id 为空"
+                        );
+                        return;
+                    }
+
+                    if (status != "SAVED")
+                    {
+                        LOG_WARN(
+                            "[AlertACK] 收到未知 ACK 状态：event_id={}, status={}",
+                            eventId,
+                            status
+                        );
+                        return;
+                    }
+
+                    LOG_INFO(
+                        "[AlertACK] 收到云端业务确认：event_id={}",
+                        eventId
+                    );
+
+                    if (!localDb.markAsUploaded(eventId))
+                    {
+                        LOG_ERROR(
+                            "[AlertACK] 更新本地报警上传状态失败：event_id={}",
+                            eventId
+                        );
+                    }
+
                     return;
                 }
 
-                const std::string url = json["rtmp_url"].get<std::string>();
-                LOG_INFO("收到实时视频请求，准备推流至：{}", url);
-                liveStreamer.start(url);
-            }
-            else if (cmd == "stop_live")
-            {
-                LOG_INFO("收到停止实时视频指令");
-                liveStreamer.stop();
-            }
-            else if (cmd == "update_safe_zones")
-            {
-                const std::string requestId = json.value("request_id", "");
-
-                if (!json.contains("safe_lie_zones") || !json["safe_lie_zones"].is_array())
+                // =====================================================
+                // 非设备控制主题直接忽略
+                // =====================================================
+                if (topic != cmdTopic)
                 {
-                    LOG_ERROR("安全区域配置指令格式错误：safe_lie_zones 不存在或不是数组，request_id={}", requestId);
+                    LOG_DEBUG(
+                        "[MQTT] 忽略未知主题：{}",
+                        topic
+                    );
                     return;
                 }
 
-                std::vector<vision::SafeLieZone> newZones;
-
-                for (const auto& zoneJson : json["safe_lie_zones"])
+                // =====================================================
+                // 控制消息必须包含 cmd
+                // =====================================================
+                if (!message.contains("cmd") ||
+                    !message["cmd"].is_string())
                 {
-                    if (!zoneJson.is_object())
+                    LOG_WARN(
+                        "[MQTT] 控制消息缺少合法 cmd：{}",
+                        payload
+                    );
+                    return;
+                }
+
+                const std::string cmd =
+                    message["cmd"].get<std::string>();
+
+                // =====================================================
+                // 2. 开启实时视频
+                // =====================================================
+                if (cmd == "start_live")
+                {
+                    if (!message.contains("rtmp_url") ||
+                        !message["rtmp_url"].is_string())
                     {
-                        throw std::runtime_error("安全区域必须为 JSON 对象");
+                        LOG_WARN(
+                            "[Live] start_live 缺少 rtmp_url"
+                        );
+                        return;
                     }
 
-                    vision::SafeLieZone zone;
-                    zone.name = zoneJson.value("name", "");
+                    const std::string rtmpUrl =
+                        message["rtmp_url"].get<std::string>();
 
-                    if (!zoneJson.contains("points") || !zoneJson["points"].is_array())
+                    if (rtmpUrl.empty())
                     {
-                        throw std::runtime_error("安全区域 points 不存在或不是数组");
+                        LOG_WARN(
+                            "[Live] start_live 的 rtmp_url 为空"
+                        );
+                        return;
                     }
 
-                    for (const auto& pointJson : zoneJson["points"])
+                    LOG_INFO(
+                        "[Live] 收到实时视频启动指令：{}",
+                        rtmpUrl
+                    );
+
+                    if (!liveStreamer.start(rtmpUrl))
                     {
-                        if (!pointJson.is_array() || pointJson.size() != 2)
+                        LOG_ERROR(
+                            "[Live] 实时视频启动失败：{}",
+                            rtmpUrl
+                        );
+                    }
+
+                    return;
+                }
+
+                // =====================================================
+                // 3. 停止实时视频
+                // =====================================================
+                if (cmd == "stop_live")
+                {
+                    LOG_INFO(
+                        "[Live] 收到实时视频停止指令"
+                    );
+
+                    liveStreamer.stop();
+                    return;
+                }
+
+                // =====================================================
+                // 4. 热更新安全区域
+                // =====================================================
+                if (cmd == "update_safe_zones")
+                {
+                    const std::string requestId =
+                        message.value("request_id", "");
+
+                    if (!message.contains("safe_lie_zones") ||
+                        !message["safe_lie_zones"].is_array())
+                    {
+                        LOG_WARN(
+                            "[SafeZone] update_safe_zones 缺少 safe_lie_zones 数组"
+                        );
+                        return;
+                    }
+
+                    std::vector<vision::SafeLieZone> newZones;
+
+                    const auto& zonesJson =
+                        message["safe_lie_zones"];
+
+                    for (const auto& zoneJson : zonesJson)
+                    {
+                        if (!zoneJson.is_object())
                         {
-                            throw std::runtime_error("安全区域坐标必须为 [x, y]");
+                            throw std::runtime_error(
+                                "安全区域数据不是对象"
+                            );
                         }
 
-                        vision::NormalizedPoint point;
-                        point.x = pointJson[0].get<float>();
-                        point.y = pointJson[1].get<float>();
+                        if (!zoneJson.contains("name") ||
+                            !zoneJson["name"].is_string())
+                        {
+                            throw std::runtime_error(
+                                "安全区域缺少合法 name"
+                            );
+                        }
 
-                        zone.points.push_back(point);
+                        if (!zoneJson.contains("points") ||
+                            !zoneJson["points"].is_array())
+                        {
+                            throw std::runtime_error(
+                                "安全区域缺少合法 points"
+                            );
+                        }
+
+                        vision::SafeLieZone zone;
+                        zone.name =
+                            zoneJson["name"].get<std::string>();
+
+                        if (zone.name.empty())
+                        {
+                            throw std::runtime_error(
+                                "安全区域名称不能为空"
+                            );
+                        }
+
+                        const auto& pointsJson =
+                            zoneJson["points"];
+
+                        if (pointsJson.size() < 3)
+                        {
+                            throw std::runtime_error(
+                                "安全区域至少需要 3 个顶点"
+                            );
+                        }
+
+                        for (const auto& pointJson : pointsJson)
+                        {
+                            if (!pointJson.is_array() ||
+                                pointJson.size() != 2 ||
+                                !pointJson[0].is_number() ||
+                                !pointJson[1].is_number())
+                            {
+                                throw std::runtime_error(
+                                    "安全区域顶点格式错误"
+                                );
+                            }
+
+                            const float x =
+                                pointJson[0].get<float>();
+
+                            const float y =
+                                pointJson[1].get<float>();
+
+                            if (x < 0.0f || x > 1.0f ||
+                                y < 0.0f || y > 1.0f)
+                            {
+                                throw std::runtime_error(
+                                    "安全区域坐标必须位于 0~1"
+                                );
+                            }
+
+                            vision::NormalizedPoint point;
+                            point.x = x;
+                            point.y = y;
+
+                            zone.points.push_back(point);
+                        }
+
+                        newZones.push_back(
+                            std::move(zone)
+                        );
                     }
 
-                    newZones.push_back(std::move(zone));
+                    if (!safeZoneManager.replaceZonesAndSave(
+                            newZones,
+                            sceneConfigPath))
+                    {
+                        LOG_ERROR(
+                            "[SafeZone] 安全区域更新失败：request_id={}",
+                            requestId
+                        );
+
+                        return;
+                    }
+
+                    LOG_INFO(
+                        "[SafeZone] 安全区域热更新成功：request_id={}, count={}",
+                        requestId,
+                        newZones.size()
+                    );
+
+                    return;
                 }
 
-                if (safeZoneManager.replaceZonesAndSave(newZones, sceneConfigPath))
-                {
-                    LOG_INFO("安全区域配置更新成功：request_id={}, zone_count={}", requestId, safeZoneManager.getZoneCount());
-                }
-                else
-                {
-                    LOG_ERROR("安全区域配置更新失败：request_id={}", requestId);
-                }
+                // =====================================================
+                // 未知指令
+                // =====================================================
+                LOG_WARN(
+                    "[MQTT] 收到未知控制指令：cmd={}",
+                    cmd
+                );
             }
-            else
+            catch (const nlohmann::json::exception& e)
             {
-                LOG_WARN("收到未知 MQTT 指令：{}", cmd);
+                LOG_ERROR(
+                    "[MQTT] JSON 解析失败：{}, payload={}",
+                    e.what(),
+                    payload
+                );
+            }
+            catch (const std::exception& e)
+            {
+                LOG_ERROR(
+                    "[MQTT] 消息处理失败：{}, payload={}",
+                    e.what(),
+                    payload
+                );
             }
         }
-        catch (const std::exception& e)
-        {
-            LOG_ERROR("解析 MQTT 指令失败：{}", e.what());
-        }
-    });
+    );
 
     // 连接云端
     if (!mqttClient.connect())
@@ -217,11 +418,21 @@ int main(int argc, char* argv[])
     }
     else
     {
-        std::string cmdTopic =
-            "fall_detection/commands/" +
-            config.getDeviceId();
+        mqttClient.subscribe(
+            cmdTopic,
+            1
+        );
 
-        mqttClient.subscribe(cmdTopic);
+        mqttClient.subscribe(
+            ackTopic,
+            1
+        );
+
+        LOG_INFO(
+            "MQTT 订阅完成：cmd={}, ack={}",
+            cmdTopic,
+            ackTopic
+        );
     }
 
     // 3. 初始化核心视觉大脑 
@@ -475,21 +686,15 @@ int main(int argc, char* argv[])
 
                 if (mqttClient.publishAlert(config.getAlertTopic(), alertEvent))
                 {
-                    // publishAlert 返回 true 表示
-                    // QoS 1 已收到 Broker 确认。
-                    localDb.markAsUploaded(
-                        alertEvent.eventId
-                    );
-
                     LOG_INFO(
-                        "[Alert] 报警上报成功：event_id={}",
+                        "[Alert] 报警已发送至 MQTT Broker，等待云端业务 ACK：event_id={}",
                         alertEvent.eventId
                     );
                 }
                 else
                 {
                     LOG_WARN(
-                        "[Alert] 报警上报失败，保留 PENDING 等待补传：event_id={}",
+                        "[Alert] 报警发送失败，保留 PENDING 等待补传：event_id={}",
                         alertEvent.eventId
                     );
                 }
@@ -540,19 +745,18 @@ int main(int argc, char* argv[])
 
                     if (mqttClient.publishAlert(config.getAlertTopic(),alert))
                     {
-                        localDb.markAsUploaded(alert.eventId);
-
                         LOG_INFO(
-                            "[Retry] 报警补传成功：event_id={}",
+                            "[Retry] 报警已重新发送至 Broker，等待云端业务 ACK：event_id={}",
                             alert.eventId
                         );
                     }
                     else
                     {
-                        LOG_WARN("[Retry] 报警补传失败，等待下次重试：event_id={}",alert.eventId);
+                        LOG_WARN(
+                            "[Retry] 报警补传发送失败，等待下次重试：event_id={}",
+                            alert.eventId
+                        );
 
-                        // 网络可能刚刚再次断开，
-                        // 本轮不继续连续发送其他记录
                         break;
                     }
                 }

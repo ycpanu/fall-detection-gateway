@@ -129,6 +129,30 @@ def get_db():
     finally:
         db.close()
 
+def publish_alert_ack(client, device_id: str, event_id: str):
+    if not device_id or not event_id:
+        return
+
+    ack_topic = f"fall_detection/ack/{device_id}"
+
+    ack_payload = {
+        "event_id": event_id,
+        "status": "SAVED",
+        "timestamp": int(time.time() * 1000)
+    }
+
+    client.publish(
+        ack_topic,
+        json.dumps(ack_payload, ensure_ascii=False),
+        qos=1,
+        retain=False
+    )
+
+    print(
+        f"[ACK] 云端业务确认已发送："
+        f"event_id={event_id}, topic={ack_topic}"
+    )
+
 # 2. 全局配置与 MQTT
 MQTT_BROKER = "127.0.0.1"
 MQTT_PORT = 1883
@@ -260,6 +284,12 @@ def on_message(client, userdata, msg):
                     f"sources={merged_sources}"
                 )
 
+                publish_alert_ack(
+                    client,
+                    device_id,
+                    event_id
+                )
+
                 return
 
             # 不存在：第一次收到该报警事件
@@ -293,6 +323,12 @@ def on_message(client, userdata, msg):
                 f"[ALERT] 新报警事件已保存："
                 f"event_id={event_id}, "
                 f"type={event_type}"
+            )
+
+            publish_alert_ack(
+                client,
+                device_id,
+                event_id
             )
             
     except Exception as e:
