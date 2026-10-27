@@ -66,6 +66,7 @@ namespace fall_detection
                 return true;
             }
 
+            LOG_INFO("正在加载 RKNN 模型: {}", modelPath_);
             int modelSize = 0;
             unsigned char* modelData = loadModelFile(modelPath_.c_str(), &modelSize);
 
@@ -83,6 +84,13 @@ namespace fall_detection
             {
                 LOG_ERROR("rknn_init 失败！错误码：{}", ret);
                 return false;
+            }
+
+            rknn_sdk_version sdkVersion{};
+            ret = rknn_query(ctx_, RKNN_QUERY_SDK_VERSION, &sdkVersion, sizeof(sdkVersion));
+            if (ret == 0)
+            {
+                LOG_INFO("RKNN Runtime={}, NPU Driver={}", sdkVersion.api_version, sdkVersion.drv_version);
             }
 
             // 2. 严格校验查询返回值
@@ -111,6 +119,11 @@ namespace fall_detection
                     LOG_ERROR("查询输入张量 {} 属性失败！错误码：{}", i, ret);
                     return false;
                 }
+                LOG_INFO("输入张量 {}: n_dims={}, dims=[{}, {}, {}, {}], fmt={}, type={}, qnt_type={}, scale={}, zp={}",
+                         i, inputAttrs_[i].n_dims, inputAttrs_[i].dims[0], inputAttrs_[i].dims[1],
+                         inputAttrs_[i].dims[2], inputAttrs_[i].dims[3],
+                         get_format_string(inputAttrs_[i].fmt), get_type_string(inputAttrs_[i].type),
+                         get_qnt_type_string(inputAttrs_[i].qnt_type), inputAttrs_[i].scale, inputAttrs_[i].zp);
             }
 
             // 4. 获取输出张量属性
@@ -124,12 +137,28 @@ namespace fall_detection
                     LOG_ERROR("查询输出张量 {} 属性失败！错误码：{}", i, ret);
                     return false;
                 }
-                LOG_INFO("输出张量 {}: n_dims={}, dims=[{}, {}, {}, {}], n_elems={}", i,
+                LOG_INFO("输出张量 {}: n_dims={}, dims=[{}, {}, {}, {}], n_elems={}, fmt={}, type={}, qnt_type={}, scale={}, zp={}", i,
                         outputAttrs_[i].n_dims, outputAttrs_[i].dims[0], outputAttrs_[i].dims[1],
-                        outputAttrs_[i].dims[2], outputAttrs_[i].dims[3], outputAttrs_[i].n_elems);
+                        outputAttrs_[i].dims[2], outputAttrs_[i].dims[3], outputAttrs_[i].n_elems,
+                        get_format_string(outputAttrs_[i].fmt), get_type_string(outputAttrs_[i].type),
+                        get_qnt_type_string(outputAttrs_[i].qnt_type), outputAttrs_[i].scale, outputAttrs_[i].zp);
             }
             
-            LOG_INFO("成功加载 RKNN 模型！模型期望输入尺寸：宽={} 高={} 通道={}",inputAttrs_[0].dims[1], inputAttrs_[0].dims[2], inputAttrs_[0].dims[3]);
+            if (numInput_ != 1 || inputAttrs_[0].n_dims != 4 ||
+                (inputAttrs_[0].fmt != RKNN_TENSOR_NHWC && inputAttrs_[0].fmt != RKNN_TENSOR_NCHW))
+            {
+                LOG_ERROR("需要单个四维 NHWC/NCHW 图像输入");
+                return false;
+            }
+            const bool nhwc = inputAttrs_[0].fmt == RKNN_TENSOR_NHWC;
+            inputSize_ = cv::Size(inputAttrs_[0].dims[nhwc ? 2 : 3], inputAttrs_[0].dims[nhwc ? 1 : 2]);
+            const int channels = inputAttrs_[0].dims[nhwc ? 3 : 1];
+            if (inputAttrs_[0].dims[0] != 1 || channels != 3 || inputSize_.width <= 0 || inputSize_.height <= 0)
+            {
+                LOG_ERROR("需要 batch=1、三通道且尺寸有效的图像输入");
+                return false;
+            }
+            LOG_INFO("成功加载 RKNN 模型！模型期望输入尺寸：宽={} 高={} 通道={}", inputSize_.width, inputSize_.height, channels);
 
             isInitialized_ = true;
             return true;
@@ -137,13 +166,6 @@ namespace fall_detection
 
         bool RKNNInferencer::detect(const cv::Mat& frame, std::vector<DetectResult>& results)
         {
-            static int warmupCount = 0;
-            static int measuredCount = 0;
-
-            static double totalRknnMs = 0.0;
-            static double minRknnMs = std::numeric_limits<double>::max();
-            static double maxRknnMs = 0.0;
-
             constexpr int WARMUP_FRAMES = 20;
             constexpr int REPORT_FRAMES = 100;
 
@@ -158,36 +180,37 @@ namespace fall_detection
                 return false;
             }
 
-            int reqWidth = inputAttrs_[0].dims[1];
-            int reqHeight = inputAttrs_[0].dims[2];
+            const auto preprocessStart = std::chrono::steady_clock::now();
+            const int reqWidth = inputSize_.width;
+            const int reqHeight = inputSize_.height;
 
-            cv::Mat rgbFrame;
-            cv::cvtColor(frame, rgbFrame, cv::COLOR_BGR2RGB);
-
-            float scale = std::min(static_cast<float>(reqWidth) / rgbFrame.cols,
-                                static_cast<float>(reqHeight) / rgbFrame.rows);
-            int newW = static_cast<int>(std::round(rgbFrame.cols * scale));
-            int newH = static_cast<int>(std::round(rgbFrame.rows * scale));
+            float scale = std::min(static_cast<float>(reqWidth) / frame.cols,
+                                static_cast<float>(reqHeight) / frame.rows);
+            int newW = static_cast<int>(std::round(frame.cols * scale));
+            int newH = static_cast<int>(std::round(frame.rows * scale));
             int padW = (reqWidth - newW) / 2;
             int padH = (reqHeight - newH) / 2;
 
             // 消除魔法数字，定义为明确的常量
             constexpr int LETTERBOX_PAD_COLOR = 114;
 
-            cv::Mat resized;
-            cv::resize(rgbFrame, resized, cv::Size(newW, newH));
-            cv::Mat letterboxed(reqHeight, reqWidth, CV_8UC3, cv::Scalar(114, 114, 114));
-            resized.copyTo(letterboxed(cv::Rect(padW, padH, newW, newH)));
+            // 先缩放再交换通道，避免对原始大图转色；复用缓冲区并直接写入目标 ROI。
+            cv::resize(frame, resizedBgr_, cv::Size(newW, newH));
+            letterboxedRgb_.create(reqHeight, reqWidth, CV_8UC3);
+            letterboxedRgb_.setTo(cv::Scalar::all(LETTERBOX_PAD_COLOR));
+            cv::Mat imageRegion = letterboxedRgb_(cv::Rect(padW, padH, newW, newH));
+            cv::cvtColor(resizedBgr_, imageRegion, cv::COLOR_BGR2RGB);
 
             rknn_input inputs[1];
             memset(inputs, 0, sizeof(inputs));
             inputs[0].index = 0;
             inputs[0].type = RKNN_TENSOR_UINT8;     
-            inputs[0].size = letterboxed.cols * letterboxed.rows * letterboxed.channels();
+            inputs[0].size = letterboxedRgb_.total() * letterboxedRgb_.elemSize();
             inputs[0].fmt = RKNN_TENSOR_NHWC;       
-            inputs[0].buf = letterboxed.data;       
+            inputs[0].buf = letterboxedRgb_.data;
             inputs[0].pass_through = 0;
 
+            const auto preprocessEnd = std::chrono::steady_clock::now();
             int ret = rknn_inputs_set(ctx_, numInput_, inputs);
             if (ret < 0)
             {
@@ -210,47 +233,19 @@ namespace fall_detection
             double rknnMs =
                 std::chrono::duration<double, std::milli>(rknnEnd - rknnStart).count();
 
-            if (warmupCount < WARMUP_FRAMES)
-            {
-                ++warmupCount;
-            }
-            else
-            {
-                ++measuredCount;
-
-                totalRknnMs += rknnMs;
-                minRknnMs = std::min(minRknnMs, rknnMs);
-                maxRknnMs = std::max(maxRknnMs, rknnMs);
-
-                if (measuredCount >= REPORT_FRAMES)
-                {
-                    double avgRknnMs = totalRknnMs / measuredCount;
-
-                    LOG_INFO(
-                        "[PERF] RKNN rknn_run: avg={:.2f} ms, min={:.2f} ms, max={:.2f} ms, samples={}",
-                        avgRknnMs,
-                        minRknnMs,
-                        maxRknnMs,
-                        measuredCount
-                    );
-
-                    measuredCount = 0;
-                    totalRknnMs = 0.0;
-                    minRknnMs = std::numeric_limits<double>::max();
-                    maxRknnMs = 0.0;
-                }
-            }
-
             // 修复 VLA 变长数组问题，使用标准的 std::vector 容器
             std::vector<rknn_output> outputs(numOutput_);
             memset(outputs.data(), 0, sizeof(rknn_output) * numOutput_);
             for (int i = 0; i < numOutput_; i++)
             {
+                outputs[i].index = i;
+                // Runtime 将量化输出转换为 float，下面按 float* 解析，无需再次反量化。
                 outputs[i].want_float = 1;      
             }
 
             // 传入 .data() 获取底层指针
             ret = rknn_outputs_get(ctx_, numOutput_, outputs.data(), NULL);
+            const auto outputEnd = std::chrono::steady_clock::now();
             if (ret < 0)
             {
                 LOG_ERROR("rknn_outputs_get 失败！错误码：{}", ret);
@@ -263,10 +258,21 @@ namespace fall_detection
             const int KPT_OFFSET = 4 + NUM_CLASSES;                 
             const int TOTAL_ATTR = KPT_OFFSET + NUM_KEYPOINTS * 3;  
             const int NUM_ANCHORS = static_cast<int>(outputAttrs_[0].n_elems) / TOTAL_ATTR;
+            float maxPersonConfidence = -std::numeric_limits<float>::infinity();
+            int nonFiniteScores = 0;
 
             for (int i = 0; i < NUM_ANCHORS; i++)
             {
                 float clsConf = outData[4 * NUM_ANCHORS + i];
+                if (std::isfinite(clsConf))
+                {
+                    maxPersonConfidence = std::max(maxPersonConfidence, clsConf);
+                }
+                else
+                {
+                    ++nonFiniteScores;
+                    continue;
+                }
                 if (clsConf <= confThreshold_) continue;
 
                 float cx = outData[0 * NUM_ANCHORS + i];
@@ -297,6 +303,15 @@ namespace fall_detection
 
             nms(candidates, results);
 
+            // INFO 级别只打印前 3 帧及每 100 帧，便于与 ONNX 的 person_scores.max() 对比。
+            ++diagnosticFrameCount_;
+            if (diagnosticFrameCount_ <= 3 || diagnosticFrameCount_ % 100 == 0)
+            {
+                LOG_INFO("[POSE诊断] frame={}, input={}x{}, want_float=1, output_bytes={}, max_person_conf={}, non_finite_scores={}, threshold={}, candidates={}, persons={}",
+                         diagnosticFrameCount_, reqWidth, reqHeight, outputs[0].size,
+                         maxPersonConfidence, nonFiniteScores, confThreshold_, candidates.size(), results.size());
+            }
+
             if (results.empty())
             {
                 LOG_TRACE("本帧未解析出有效人体（候选框 {} 个，confThreshold={}）", candidates.size(), confThreshold_);
@@ -309,6 +324,41 @@ namespace fall_detection
 
             // 传入 .data() 获取底层指针
             rknn_outputs_release(ctx_, numOutput_, outputs.data());
+
+            const auto postprocessEnd = std::chrono::steady_clock::now();
+            if (warmupCount_ < WARMUP_FRAMES)
+            {
+                ++warmupCount_;
+            }
+            else
+            {
+                const auto milliseconds = [](auto duration) {
+                    return std::chrono::duration<double, std::milli>(duration).count();
+                };
+                const std::array<double, 5> stages = {
+                    milliseconds(preprocessEnd - preprocessStart),
+                    milliseconds(rknnStart - preprocessEnd),
+                    rknnMs,
+                    milliseconds(outputEnd - rknnEnd),
+                    milliseconds(postprocessEnd - outputEnd)
+                };
+                for (size_t i = 0; i < stages.size(); ++i) stageTotalMs_[i] += stages[i];
+                minRknnMs_ = std::min(minRknnMs_, rknnMs);
+                maxRknnMs_ = std::max(maxRknnMs_, rknnMs);
+                if (++measuredCount_ >= REPORT_FRAMES)
+                {
+                    LOG_INFO("[PERF] RKNN rknn_run: avg={:.2f} ms, min={:.2f} ms, max={:.2f} ms, samples={}",
+                             stageTotalMs_[2] / measuredCount_, minRknnMs_, maxRknnMs_, measuredCount_);
+                    LOG_INFO("[PERF] RKNN stages: preprocess={:.2f} ms, inputs_set={:.2f} ms, run={:.2f} ms, outputs_get={:.2f} ms, postprocess={:.2f} ms, samples={}",
+                             stageTotalMs_[0] / measuredCount_, stageTotalMs_[1] / measuredCount_,
+                             stageTotalMs_[2] / measuredCount_, stageTotalMs_[3] / measuredCount_,
+                             stageTotalMs_[4] / measuredCount_, measuredCount_);
+                    measuredCount_ = 0;
+                    stageTotalMs_.fill(0.0);
+                    minRknnMs_ = std::numeric_limits<double>::max();
+                    maxRknnMs_ = 0.0;
+                }
+            }
 
             return true;
         }

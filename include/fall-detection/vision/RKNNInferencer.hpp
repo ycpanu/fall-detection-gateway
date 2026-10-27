@@ -2,6 +2,8 @@
 
 #include <string>
 #include <vector>
+#include <array>
+#include <limits>
 #include <opencv2/opencv.hpp>
 
 #include "rknn_api.h"
@@ -70,6 +72,17 @@ namespace fall_detection
             rknn_tensor_attr* outputAttrs_;
             int numInput_;
             int numOutput_;
+            unsigned int diagnosticFrameCount_ = 0;
+            cv::Size inputSize_;
+            cv::Mat resizedBgr_;
+            cv::Mat letterboxedRgb_;
+
+            int warmupCount_ = 0;
+            int measuredCount_ = 0;
+            // 预处理、输入提交、执行、输出获取、后处理，单位 ms。
+            std::array<double, 5> stageTotalMs_{};
+            double minRknnMs_ = std::numeric_limits<double>::max();
+            double maxRknnMs_ = 0.0;
 
             // YOLOv8 后处理阈值（由 ConfigManager 从 config.json 注入）
             float confThreshold_;   // 置信度过滤阈值

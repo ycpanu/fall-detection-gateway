@@ -18,7 +18,7 @@
     },
 
     "model": {
-        "rknn_model_path": "./yolov8n-pose.rknn",
+        "rknn_model_path": "./models/yolov8n-pose-512-hybrid.rknn",
         "confidence_threshold": 0.5,
         "nms_threshold": 0.45
     },
@@ -32,9 +32,9 @@
         "normalized_velocity_threshold": 0.6,
         "normalized_center_velocity_threshold": 0.5,
 
-        "suspect_confirm_ms": 1000,
+        "suspect_confirm_ms": 2000,
         "static_lie_confirm_ms": 5000,
-        "fall_event_window_ms": 1500,
+        "fall_event_window_ms": 2500,
         "safe_zone_overlap_threshold": 0.5
     },
 

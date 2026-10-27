@@ -196,6 +196,98 @@ fall-detection-gateway/
 
 ## 构建与运行
 
+### Pose 模型混合量化
+
+`[1,56,8400]` 的合并输出包含像素坐标以及 `0～1` 的人体、关键点置信度。
+若整个输出共用一个 INT8 量化尺度，坐标范围可能导致置信度被量化为零。
+转换脚本使用 RKNN Toolkit2 的两步混合量化，默认 `--fp16-scope output`：卷积保持 INT8，
+仅将关键点坐标/置信度合并、最终输出合并及其输出别名设为 FP16。
+当前模型对应 5 个 FP16 张量，编译结果的 77 个卷积类算子均为 INT8。
+旧版将整个检测头设为 FP16，会让大量卷积使用浮点计算；需要复现旧方案时可指定 `--fp16-scope head`。
+输入仍由 C++ 提供 RGB uint8，归一化在 RKNN 中完成；C++ 保留 `want_float=1`。
+
+在安装了 RKNN Toolkit2 的环境中，从项目根目录运行：
+
+```bash
+python -u models/convert_rknn.py
+```
+
+默认读取 `models/yolov8n-pose.onnx` 和 `models/dataset.txt`，输出
+`models/yolov8n-pose-hybrid.rknn`。中间文件保存在 `build/rknn_pose_hybrid`。
+可用 `--step 1` 和 `--step 2` 分别执行两个阶段；`--calibration-limit 20` 仅用于快速验证流程，
+正式转换默认使用完整标定列表。该混合量化路径依据瑞芯微的
+[混合量化示例](https://github.com/airockchip/rknn-toolkit2/tree/master/rknn-toolkit2/examples/functions/hybrid_quant)。
+
+如果已完成旧版转换，且工作目录中保留了 `.model`、`.data`、`.quantization.cfg`，可复用标定结果：
+
+```bash
+python -u models/convert_rknn.py --step 2 --fp16-scope output \
+  --output models/yolov8n-pose-hybrid-fast.rknn
+```
+
+第二步会重新配置 FP16 范围，清除旧版整个检测头的 FP16 设置，无需再次标定。
+若中间文件存放在其他目录，追加 `--work-dir 实际目录`；`scripts/build.sh` 会清理 `build/`，
+需要长期保留中间文件时，应选择 `build/` 以外的工作目录。
+若中间文件已被删除，去掉 `--step 2` 重新执行完整转换。
+
+启动后会显示 Python 路径、当前阶段和标定图片路径检查进度。
+`/mnt/` 下的跨系统文件检查可能较慢；出现 `标定路径检查：...` 时尚未开始模型量化。
+
+将新模型复制到开发板项目的 `models/` 目录，并在 `configs/config.json` 中设置：
+
+```json
+"rknn_model_path": "./models/yolov8n-pose-hybrid.rknn"
+```
+
+用同一视频复测：启动日志的最终输出应为 FP16，且有人画面的 `[POSE诊断] max_person_conf`
+应能恢复非零值。是否达到原检测效果仍以板端视频测试为准。
+若使用上述 `hybrid-fast` 文件名，配置中的路径也要相应修改。
+模拟器抽样只能验证数值和检测结果，实际 FPS 需在开发板上用同一视频测量，
+同时比较 `[PERF]` 的 `rknn_run` 耗时与程序整体 FPS。
+程序预热 20 帧后，每 100 帧还会输出 `[PERF] RKNN stages`，分别统计
+`preprocess`、`inputs_set`、`run`、`outputs_get`、`postprocess` 的平均耗时。
+这些值对应图像预处理、输入提交、模型执行、输出获取、后处理（含输出释放）。
+预处理会先缩放 BGR 图像，再转为 RGB 并写入复用的 letterbox 缓冲区。
+测试 C++ 优化时继续使用同一个模型和视频，以便比较耗时。
+
+### 512 输入的测速模型
+
+若 640 输入的 `rknn_run` 已接近 100 ms，达到整体 10 FPS 还需要给前后处理留出时间。
+可以用同一份权重重新导出 512 输入，保持上述混合量化方式；512 的像素数为 640 的 64%，
+实际速度需上板测量，人体和关键点精度也需复测，尤其是远处的小目标。
+模型尺寸由导出的计算图决定，不能仅在配置文件中修改图片尺寸。
+
+在安装了 Ultralytics 的导出环境中，从原权重所在目录执行以下 Python 代码。
+这里使用原模型对应的 Ultralytics 8.4.116、opset 12，另存权重副本以避免覆盖已有 ONNX：
+
+```python
+import shutil
+from ultralytics import YOLO
+
+shutil.copy2("yolov8n-pose.pt", "yolov8n-pose-512.pt")
+YOLO("yolov8n-pose-512.pt").export(
+    format="onnx", imgsz=512, opset=12, simplify=False,
+    dynamic=False, nms=False, device="cpu",
+)
+```
+
+导出参数见 [Ultralytics 官方说明](https://docs.ultralytics.com/modes/export/)。
+将生成的 `yolov8n-pose-512.onnx` 放到本项目 `models/`，在 RKNN 转换环境运行：
+
+```bash
+python -u models/convert_rknn.py \
+  --onnx models/yolov8n-pose-512.onnx \
+  --work-dir /tmp/rknn_pose_512 \
+  --calibration-limit 20 \
+  --output models/yolov8n-pose-512-hybrid-fast-test.rknn
+```
+
+这是 20 张标定图的快速验证配置；正式评估请去掉 `--calibration-limit 20`，使用有代表性的完整标定列表。
+新尺寸需要重新标定，不能沿用 640 模型的 `.model/.data/.quantization.cfg`。
+将模型复制到开发板并修改 `rknn_model_path` 后，启动日志应显示输入 `512×512`、输出 `[1,56,5376]`。
+C++ 从模型属性读取输入尺寸与候选数量，无需修改置信度阈值或写死 5376。
+先比较同一段视频的 `[PERF]` 日志和跌倒检测结果，再决定是否采用该尺寸。
+
 ### 环境要求
 
 边缘端主要依赖：
