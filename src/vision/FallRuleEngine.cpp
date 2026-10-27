@@ -146,6 +146,10 @@ namespace fall_detection
             constexpr int R_SHOULDER = 6;
             constexpr int L_HIP = 11;
             constexpr int R_HIP = 12;
+            constexpr int L_KNEE = 13;
+            constexpr int R_KNEE = 14;
+            constexpr int L_ANKLE = 15;
+            constexpr int R_ANKLE = 16;
 
 
             const auto now =
@@ -303,6 +307,29 @@ namespace fall_detection
                 static_cast<float>(
                     std::max(target.height, 1)
                 );
+
+            // 弯腰时躯干可能接近水平，但髋、膝、踝仍沿同一条直立的腿排列。
+            // 仅在关键点可靠且两个腿段都明显向下时，才认为该腿仍在支撑身体。
+            const auto isSupportingLeg = [&](int hip, int knee, int ankle)
+            {
+                if (kp[hip].confidence < config_.kptConfThreshold ||
+                    kp[knee].confidence < config_.kptConfThreshold ||
+                    kp[ankle].confidence < config_.kptConfThreshold)
+                {
+                    return false;
+                }
+
+                const float upperY = static_cast<float>(kp[knee].y - kp[hip].y);
+                const float lowerY = static_cast<float>(kp[ankle].y - kp[knee].y);
+                const float minSegment = bodyHeight * 0.08f;
+                return upperY >= minSegment && lowerY >= minSegment &&
+                    std::abs(kp[knee].x - kp[hip].x) <= upperY * 0.75f &&
+                    std::abs(kp[ankle].x - kp[knee].x) <= lowerY * 0.75f;
+            };
+
+            const bool hasSupportingLeg =
+                isSupportingLeg(L_HIP, L_KNEE, L_ANKLE) ||
+                isSupportingLeg(R_HIP, R_KNEE, R_ANKLE);
 
 
             const float centerX =
@@ -466,11 +493,24 @@ namespace fall_detection
                 hipFastDrop ||
                 centerFastDrop;
 
+            // 框中心会随着肩膀弯下而下降；若髋部没有快速下降且腿仍直立，
+            // 这不是足够的跌倒证据。失去腿部关键点时不做这个抑制。
+            const bool supportedBend =
+                angle > config_.recoveryAngleThreshold &&
+                hasSupportingLeg && !hipFastDrop;
+
+            if (supportedBend && centerFastDrop)
+            {
+                LOG_INFO(
+                    "[FallRule][Track {}] 中心下降但髋部未快速下降、腿部仍直立，按弯腰抑制 angle={:.1f}, hipV={:.2f}, centerV={:.2f}",
+                    trackId, angle, normalizedHipVelocity, normalizedCenterVelocity);
+            }
+
 
             // =====================================================
             // 快速下降时间窗口
             // =====================================================
-            if (fastDrop)
+            if (fastDrop && !supportedBend)
             {
                 personState.fastDropDetected =
                     true;
@@ -503,7 +543,7 @@ namespace fall_detection
             // =====================================================
             // 静态躺卧计时
             // =====================================================
-            if (isLying &&
+            if (isLying && !supportedBend &&
                 !inSafeLieZone)
             {
                 if (!personState.lieTimerActive)
@@ -524,6 +564,17 @@ namespace fall_detection
 
             bool confirmedThisFrame =
                 false;
+
+            if (supportedBend)
+            {
+                personState.fastDropDetected = false;
+                personState.lieTimerActive = false;
+                if (personState.state == FallState::SUSPECTED_FALL)
+                {
+                    LOG_INFO("[FallRule][Track {}] 腿部保持直立且髋部未快速下降，疑似跌倒取消", trackId);
+                    resetPersonToNormal(personState);
+                }
+            }
 
 
             // =====================================================
@@ -548,7 +599,7 @@ namespace fall_detection
                         break;
                     }
 
-                    if (!inSafeLieZone &&
+                    if (!supportedBend && !inSafeLieZone &&
                         personState.fastDropDetected &&
                         angle > config_.recoveryAngleThreshold)
                     {
@@ -563,7 +614,7 @@ namespace fall_detection
                             normalizedCenterVelocity
                         );
                     }
-                    else if (isLying &&
+                    else if (isLying && !supportedBend &&
                             !inSafeLieZone &&
                             personState.lieTimerActive)
                     {
@@ -618,7 +669,7 @@ namespace fall_detection
                             now - personState.suspectedStartTime
                         ).count();
 
-                    if (isLying &&
+                    if (isLying && !supportedBend &&
                         !inSafeLieZone &&
                         duration >= config_.suspectConfirmMs)
                     {

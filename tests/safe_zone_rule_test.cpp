@@ -16,334 +16,389 @@ using namespace std::chrono_literals;
 
 namespace
 {
-constexpr int FRAME_WIDTH = 640;
-constexpr int FRAME_HEIGHT = 480;
+    constexpr int FRAME_WIDTH = 640;
+    constexpr int FRAME_HEIGHT = 480;
 
-TrackedPerson makePerson(
-    int trackId,
-    int boxX,
-    int boxY,
-    int boxWidth,
-    int boxHeight,
-    int shoulderX,
-    int shoulderY,
-    int hipX,
-    int hipY)
-{
-    TrackedPerson person;
-    person.trackId = trackId;
-
-    auto& detection = person.detection;
-    detection.classId = 0;
-    detection.confidence = 0.95f;
-    detection.x = boxX;
-    detection.y = boxY;
-    detection.width = boxWidth;
-    detection.height = boxHeight;
-
-    detection.keypoints.resize(17);
-
-    for (auto& point : detection.keypoints)
+    TrackedPerson makePerson(
+        int trackId,
+        int boxX,
+        int boxY,
+        int boxWidth,
+        int boxHeight,
+        int shoulderX,
+        int shoulderY,
+        int hipX,
+        int hipY)
     {
-        point.x = 0;
-        point.y = 0;
-        point.confidence = 0.0f;
+        TrackedPerson person;
+        person.trackId = trackId;
+
+        auto& detection = person.detection;
+        detection.classId = 0;
+        detection.confidence = 0.95f;
+        detection.x = boxX;
+        detection.y = boxY;
+        detection.width = boxWidth;
+        detection.height = boxHeight;
+
+        detection.keypoints.resize(17);
+
+        for (auto& point : detection.keypoints)
+        {
+            point.x = 0;
+            point.y = 0;
+            point.confidence = 0.0f;
+        }
+
+        // COCO: 5/6 = 左右肩，11/12 = 左右髋
+        detection.keypoints[5] = {shoulderX - 10, shoulderY, 0.95f};
+        detection.keypoints[6] = {shoulderX + 10, shoulderY, 0.95f};
+
+        detection.keypoints[11] = {hipX - 10, hipY, 0.95f};
+        detection.keypoints[12] = {hipX + 10, hipY, 0.95f};
+
+        return person;
     }
 
-    // COCO: 5/6 = 左右肩，11/12 = 左右髋
-    detection.keypoints[5] = {shoulderX - 10, shoulderY, 0.95f};
-    detection.keypoints[6] = {shoulderX + 10, shoulderY, 0.95f};
-
-    detection.keypoints[11] = {hipX - 10, hipY, 0.95f};
-    detection.keypoints[12] = {hipX + 10, hipY, 0.95f};
-
-    return person;
-}
-
-bool hasFallEvent(const std::vector<event::AlertEvent>& events)
-{
-    return !events.empty();
-}
-
-bool createTestSceneConfig(const std::string& path)
-{
-    std::ofstream file(path);
-
-    if (!file.is_open())
-        return false;
-
-    file << R"({
-  "version": 1,
-  "safe_lie_zones": [
+    TrackedPerson withLegs(TrackedPerson person, int kneeX, int kneeY, int ankleX, int ankleY)
     {
-      "name": "test_bed",
-      "points": [
-        [0.10, 0.40],
-        [0.90, 0.40],
-        [0.90, 0.90],
-        [0.10, 0.90]
-      ]
+        auto& points = person.detection.keypoints;
+        points[13] = {kneeX - 10, kneeY, 0.95f};
+        points[14] = {kneeX + 10, kneeY, 0.95f};
+        points[15] = {ankleX - 10, ankleY, 0.95f};
+        points[16] = {ankleX + 10, ankleY, 0.95f};
+        return person;
     }
-  ]
-})";
 
-    return file.good();
-}
-
-FallRuleConfig createTestRuleConfig()
-{
-    FallRuleConfig config;
-
-    config.kptConfThreshold = 0.3f;
-    config.fallAngleThreshold = 60.0f;
-    config.recoveryAngleThreshold = 35.0f;
-
-    config.normalizedVelocityThreshold = 0.6f;
-    config.normalizedCenterVelocityThreshold = 0.5f;
-
-    // 测试时缩短时间，不需要真的等待 5 秒。
-    config.suspectConfirmMs = 60;
-    config.staticLieConfirmMs = 90;
-    config.fallEventWindowMs = 300;
-
-    config.safeZoneOverlapThreshold = 0.5f;
-
-    return config;
-}
-
-bool testStaticLyingInsideSafeZone(SafeZoneManager& safeZoneManager)
-{
-    std::cout << "\n[TEST 1] 安全区域内静态躺卧" << std::endl;
-
-    FallRuleEngine engine(createTestRuleConfig(), &safeZoneManager);
-
-    // 身体轴线接近水平：
-    // shoulder=(220,300)
-    // hip=(320,300)
-    // angle ≈ 90°
-    //
-    // 人体框完全位于测试安全区域内。
-    const TrackedPerson person = makePerson(
-        1,
-        160,
-        220,
-        320,
-        160,
-        220,
-        300,
-        320,
-        300
-    );
-
-    bool alarmed = false;
-
-    for (int i = 0; i < 7; ++i)
+    bool hasFallEvent(const std::vector<event::AlertEvent>& events)
     {
-        const auto events = engine.processFrame(
-            {person},
+        return !events.empty();
+    }
+
+    bool createTestSceneConfig(const std::string& path)
+    {
+        std::ofstream file(path);
+
+        if (!file.is_open())
+            return false;
+
+        file << R"({
+    "version": 1,
+    "safe_lie_zones": [
+        {
+        "name": "test_bed",
+        "points": [
+            [0.10, 0.40],
+            [0.90, 0.40],
+            [0.90, 0.90],
+            [0.10, 0.90]
+        ]
+        }
+    ]
+    })";
+
+        return file.good();
+    }
+
+    FallRuleConfig createTestRuleConfig()
+    {
+        FallRuleConfig config;
+
+        config.kptConfThreshold = 0.3f;
+        config.fallAngleThreshold = 60.0f;
+        config.recoveryAngleThreshold = 35.0f;
+
+        config.normalizedVelocityThreshold = 0.6f;
+        config.normalizedCenterVelocityThreshold = 0.5f;
+
+        // 测试时缩短时间，不需要真的等待 5 秒。
+        config.suspectConfirmMs = 60;
+        config.staticLieConfirmMs = 90;
+        config.fallEventWindowMs = 300;
+
+        config.safeZoneOverlapThreshold = 0.5f;
+
+        return config;
+    }
+
+    bool testStaticLyingInsideSafeZone(SafeZoneManager& safeZoneManager)
+    {
+        std::cout << "\n[TEST 1] 安全区域内静态躺卧" << std::endl;
+
+        FallRuleEngine engine(createTestRuleConfig(), &safeZoneManager);
+
+        // 身体轴线接近水平：
+        // shoulder=(220,300)
+        // hip=(320,300)
+        // angle ≈ 90°
+        //
+        // 人体框完全位于测试安全区域内。
+        const TrackedPerson person = makePerson(
+            1,
+            160,
+            220,
+            320,
+            160,
+            220,
+            300,
+            320,
+            300
+        );
+
+        bool alarmed = false;
+
+        for (int i = 0; i < 7; ++i)
+        {
+            const auto events = engine.processFrame(
+                {person},
+                FRAME_WIDTH,
+                FRAME_HEIGHT
+            );
+
+            if (hasFallEvent(events))
+                alarmed = true;
+
+            std::this_thread::sleep_for(25ms);
+        }
+
+        if (alarmed)
+        {
+            std::cout << "[FAIL] 安全区域内静态躺卧产生了 FALL" << std::endl;
+            return false;
+        }
+
+        std::cout << "[PASS] 安全区域内静态躺卧未产生 FALL" << std::endl;
+        return true;
+    }
+
+    bool testStaticLyingOutsideSafeZone(SafeZoneManager& safeZoneManager)
+    {
+        std::cout << "\n[TEST 2] 安全区域外静态躺卧" << std::endl;
+
+        FallRuleEngine engine(createTestRuleConfig(), &safeZoneManager);
+
+        // 同样是水平躺卧，但人体位于安全区域上方。
+        const TrackedPerson person = makePerson(
+            2,
+            160,
+            30,
+            320,
+            120,
+            220,
+            100,
+            320,
+            100
+        );
+
+        bool alarmed = false;
+
+        for (int i = 0; i < 7; ++i)
+        {
+            const auto events = engine.processFrame(
+                {person},
+                FRAME_WIDTH,
+                FRAME_HEIGHT
+            );
+
+            if (hasFallEvent(events))
+            {
+                alarmed = true;
+                break;
+            }
+
+            std::this_thread::sleep_for(25ms);
+        }
+
+        if (!alarmed)
+        {
+            std::cout << "[FAIL] 安全区域外持续躺卧没有产生 FALL" << std::endl;
+            return false;
+        }
+
+        std::cout << "[PASS] 安全区域外持续躺卧正常产生 FALL" << std::endl;
+        return true;
+    }
+
+    bool testFastDropIntoSafeZone(SafeZoneManager& safeZoneManager)
+    {
+        std::cout << "\n[TEST 3] 快速下降后进入安全区域" << std::endl;
+
+        FallRuleEngine engine(createTestRuleConfig(), &safeZoneManager);
+
+        const TrackedPerson standing = makePerson(
+            3,
+            260,
+            170,
+            80,
+            220,
+            300,
+            220,
+            300,
+            320
+        );
+
+        // 先输入站立帧，建立上一帧运动状态。
+        engine.processFrame(
+            {standing},
             FRAME_WIDTH,
             FRAME_HEIGHT
         );
-
-        if (hasFallEvent(events))
-            alarmed = true;
 
         std::this_thread::sleep_for(25ms);
+
+        const TrackedPerson lying = makePerson(
+            3,
+            160,
+            220,
+            320,
+            160,
+            220,
+            300,
+            320,
+            300
+        );
+
+        bool alarmed = false;
+
+        for (int i = 0; i < 6; ++i)
+        {
+            const auto events = engine.processFrame(
+                {lying},
+                FRAME_WIDTH,
+                FRAME_HEIGHT
+            );
+
+            if (hasFallEvent(events))
+            {
+                alarmed = true;
+                break;
+            }
+
+            std::this_thread::sleep_for(30ms);
+        }
+
+        if (alarmed)
+        {
+            std::cout << "[FAIL] 快速下降后落入安全区域仍产生了 FALL" << std::endl;
+            return false;
+        }
+
+        std::cout << "[PASS] 快速下降后落入安全区域被正确抑制" << std::endl;
+        return true;
     }
 
-    if (alarmed)
+    bool testFastDropOutsideSafeZone(SafeZoneManager& safeZoneManager)
     {
-        std::cout << "[FAIL] 安全区域内静态躺卧产生了 FALL" << std::endl;
-        return false;
-    }
+        std::cout << "\n[TEST 4] 安全区域外快速下降" << std::endl;
 
-    std::cout << "[PASS] 安全区域内静态躺卧未产生 FALL" << std::endl;
-    return true;
-}
+        FallRuleEngine engine(createTestRuleConfig(), &safeZoneManager);
 
-bool testStaticLyingOutsideSafeZone(SafeZoneManager& safeZoneManager)
-{
-    std::cout << "\n[TEST 2] 安全区域外静态躺卧" << std::endl;
+        const TrackedPerson standing = makePerson(
+            4,
+            260,
+            0,
+            80,
+            100,
+            300,
+            20,
+            300,
+            80
+        );
 
-    FallRuleEngine engine(createTestRuleConfig(), &safeZoneManager);
-
-    // 同样是水平躺卧，但人体位于安全区域上方。
-    const TrackedPerson person = makePerson(
-        2,
-        160,
-        30,
-        320,
-        120,
-        220,
-        100,
-        320,
-        100
-    );
-
-    bool alarmed = false;
-
-    for (int i = 0; i < 7; ++i)
-    {
-        const auto events = engine.processFrame(
-            {person},
+        engine.processFrame(
+            {standing},
             FRAME_WIDTH,
             FRAME_HEIGHT
         );
-
-        if (hasFallEvent(events))
-        {
-            alarmed = true;
-            break;
-        }
 
         std::this_thread::sleep_for(25ms);
-    }
 
-    if (!alarmed)
-    {
-        std::cout << "[FAIL] 安全区域外持续躺卧没有产生 FALL" << std::endl;
-        return false;
-    }
-
-    std::cout << "[PASS] 安全区域外持续躺卧正常产生 FALL" << std::endl;
-    return true;
-}
-
-bool testFastDropIntoSafeZone(SafeZoneManager& safeZoneManager)
-{
-    std::cout << "\n[TEST 3] 快速下降后进入安全区域" << std::endl;
-
-    FallRuleEngine engine(createTestRuleConfig(), &safeZoneManager);
-
-    const TrackedPerson standing = makePerson(
-        3,
-        260,
-        170,
-        80,
-        220,
-        300,
-        220,
-        300,
-        320
-    );
-
-    // 先输入站立帧，建立上一帧运动状态。
-    engine.processFrame(
-        {standing},
-        FRAME_WIDTH,
-        FRAME_HEIGHT
-    );
-
-    std::this_thread::sleep_for(25ms);
-
-    const TrackedPerson lying = makePerson(
-        3,
-        160,
-        220,
-        320,
-        160,
-        220,
-        300,
-        320,
-        300
-    );
-
-    bool alarmed = false;
-
-    for (int i = 0; i < 6; ++i)
-    {
-        const auto events = engine.processFrame(
-            {lying},
-            FRAME_WIDTH,
-            FRAME_HEIGHT
+        // 中心点和髋部明显向下移动，同时身体变成水平状态。
+        const TrackedPerson lying = makePerson(
+            4,
+            160,
+            70,
+            320,
+            100,
+            220,
+            120,
+            320,
+            120
         );
 
-        if (hasFallEvent(events))
+        bool alarmed = false;
+
+        for (int i = 0; i < 6; ++i)
         {
-            alarmed = true;
-            break;
+            const auto events = engine.processFrame(
+                {lying},
+                FRAME_WIDTH,
+                FRAME_HEIGHT
+            );
+
+            if (hasFallEvent(events))
+            {
+                alarmed = true;
+                break;
+            }
+
+            std::this_thread::sleep_for(30ms);
         }
 
-        std::this_thread::sleep_for(30ms);
-    }
-
-    if (alarmed)
-    {
-        std::cout << "[FAIL] 快速下降后落入安全区域仍产生了 FALL" << std::endl;
-        return false;
-    }
-
-    std::cout << "[PASS] 快速下降后落入安全区域被正确抑制" << std::endl;
-    return true;
-}
-
-bool testFastDropOutsideSafeZone(SafeZoneManager& safeZoneManager)
-{
-    std::cout << "\n[TEST 4] 安全区域外快速下降" << std::endl;
-
-    FallRuleEngine engine(createTestRuleConfig(), &safeZoneManager);
-
-    const TrackedPerson standing = makePerson(
-        4,
-        260,
-        0,
-        80,
-        100,
-        300,
-        20,
-        300,
-        80
-    );
-
-    engine.processFrame(
-        {standing},
-        FRAME_WIDTH,
-        FRAME_HEIGHT
-    );
-
-    std::this_thread::sleep_for(25ms);
-
-    // 中心点和髋部明显向下移动，同时身体变成水平状态。
-    const TrackedPerson lying = makePerson(
-        4,
-        160,
-        70,
-        320,
-        100,
-        220,
-        120,
-        320,
-        120
-    );
-
-    bool alarmed = false;
-
-    for (int i = 0; i < 6; ++i)
-    {
-        const auto events = engine.processFrame(
-            {lying},
-            FRAME_WIDTH,
-            FRAME_HEIGHT
-        );
-
-        if (hasFallEvent(events))
+        if (!alarmed)
         {
-            alarmed = true;
-            break;
+            std::cout << "[FAIL] 安全区域外快速下降没有产生 FALL" << std::endl;
+            return false;
         }
 
-        std::this_thread::sleep_for(30ms);
+        std::cout << "[PASS] 安全区域外快速下降正常产生 FALL" << std::endl;
+        return true;
     }
 
-    if (!alarmed)
+    bool testBendingAndThenFalling()
     {
-        std::cout << "[FAIL] 安全区域外快速下降没有产生 FALL" << std::endl;
+        std::cout << "\n[TEST 5] 弯腰捡东西后真正跌倒" << std::endl;
+
+        FallRuleEngine engine(createTestRuleConfig());
+        const auto standing = withLegs(makePerson(
+            5, 260, 0, 80, 200, 300, 20, 300, 80
+        ), 300, 130, 300, 180);
+        const auto bending = withLegs(makePerson(
+            5, 180, 60, 200, 140, 210, 80, 300, 80
+        ), 300, 130, 300, 180);
+        const auto fallen = withLegs(makePerson(
+            5, 150, 70, 300, 120, 200, 130, 300, 130
+        ), 360, 130, 420, 130);
+
+        engine.processFrame({standing}, FRAME_WIDTH, FRAME_HEIGHT);
+        std::this_thread::sleep_for(25ms);
+
+        // 肩膀和框中心迅速下降，髋部与直立的膝踝位置不变；
+        // 保持时间长于快速下坠确认和静态异常躺卧的测试阈值。
+        for (int i = 0; i < 7; ++i)
+        {
+            if (hasFallEvent(engine.processFrame({bending}, FRAME_WIDTH, FRAME_HEIGHT)))
+            {
+                std::cout << "[FAIL] 持续弯腰被误报为 FALL" << std::endl;
+                return false;
+            }
+            std::this_thread::sleep_for(25ms);
+        }
+
+        // 接着髋部真正下坠，腿部不再保持直立，应仍能确认跌倒。
+        for (int i = 0; i < 6; ++i)
+        {
+            if (hasFallEvent(engine.processFrame({fallen}, FRAME_WIDTH, FRAME_HEIGHT)))
+            {
+                std::cout << "[PASS] 弯腰未报警，随后真正跌倒正常报警" << std::endl;
+                return true;
+            }
+            std::this_thread::sleep_for(25ms);
+        }
+
+        std::cout << "[FAIL] 弯腰后真正跌倒未能报警" << std::endl;
         return false;
     }
-
-    std::cout << "[PASS] 安全区域外快速下降正常产生 FALL" << std::endl;
-    return true;
-}
 }
 
 int main()
@@ -389,6 +444,10 @@ int main()
 
     ++total;
     if (testFastDropOutsideSafeZone(safeZoneManager))
+        ++passed;
+
+    ++total;
+    if (testBendingAndThenFalling())
         ++passed;
 
     std::remove(configPath.c_str());
