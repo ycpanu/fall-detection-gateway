@@ -56,6 +56,8 @@ namespace fall_detection
             );
 
             void setVideoReadyCallback(VideoReadyCallback callback);
+            // 停止采集后完成排队中的编码，并等待回调写入数据库。
+            void stopAndDrain();
 
         private:
             void encodingWorkerLoop();

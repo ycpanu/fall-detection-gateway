@@ -95,9 +95,11 @@ SQLite UPLOADED
 
 主要设计包括：
 
-- 报警先写入本地 SQLite，再尝试上传；
+- 报警等待 SQLite 提交成功后再发布 MQTT，写入失败会记录错误；
 - MQTT 使用 QoS 1 传输关键报警；
-- 网络恢复后由独立补传线程重新发送 `PENDING` 事件；
+- MQTT 离线时暂停补传；连接恢复后唤醒补传线程重新发送 `PENDING` 事件；
+- 云端业务 ACK 到达前，每条报警最多每 60 秒重发一次；
+- 视频离线时暂停 HTTP 上传，在线失败时采用递增间隔重试；
 - 使用唯一 `event_id` 保证重复发送时的幂等性；
 - MQTT 支持自动重连和订阅恢复。
 
@@ -128,7 +130,7 @@ Live Streaming
 
 线程之间主要使用 `std::thread`、`std::atomic`、`std::mutex`、`std::condition_variable`、线程安全队列和生产者/消费者模型进行同步与数据交换。
 
-程序支持 `SIGINT / SIGTERM` 优雅退出，并对 MQTT、音频、摄像头及后台工作线程等资源进行统一释放。
+程序支持 `SIGINT / SIGTERM` 优雅退出：停止采集后等待报警入库与视频编码完成，再关闭上传线程和数据库。编码中的 FFmpeg 使用独立进程组，视频编码成功后才将临时文件改名为最终 MP4。
 
 ---
 
@@ -251,7 +253,7 @@ python -u models/convert_rknn.py --step 2 --fp16-scope output \
 预处理会先缩放 BGR 图像，再转为 RGB 并写入复用的 letterbox 缓冲区。
 测试 C++ 优化时继续使用同一个模型和视频，以便比较耗时。
 
-### 512 输入的测速模型
+### 512 输入模型
 
 若 640 输入的 `rknn_run` 已接近 100 ms，达到整体 10 FPS 还需要给前后处理留出时间。
 可以用同一份权重重新导出 512 输入，保持上述混合量化方式；512 的像素数为 640 的 64%，
@@ -289,6 +291,12 @@ python -u models/convert_rknn.py \
 C++ 从模型属性读取输入尺寸与候选数量，无需修改置信度阈值或写死 5376。
 先比较同一段视频的 `[PERF]` 日志和跌倒检测结果，再决定是否采用该尺寸。
 
+当前 `configs/config.json` 使用完整标定的 `models/yolov8n-pose-512-hybrid.rknn`，
+规则确认时间为 2000 ms、快速下降事件窗口为 2500 ms。模型二进制文件被 `.gitignore` 排除，
+部署或重新检出代码时须另行复制到开发板项目的 `models/` 目录。
+程序启动时会检查配置文件、这两个规则参数及模型文件；缺失时会报告错误并退出，
+避免意外使用默认的 1000 ms 确认时间或旧模型。
+
 ### 环境要求
 
 边缘端主要依赖：
@@ -314,6 +322,8 @@ cd build
 cmake ..
 cmake --build . -j$(nproc)
 ```
+
+交叉编译后可在开发板执行 `./bin/local_database_test` 验证 SQLite 持久化顺序，执行 `./bin/video_uploader_test` 验证离线暂停和恢复唤醒。服务部署时需要同步更新 `deploy/fall-detection.service`，使退出等待时间覆盖视频编码。
 
 运行方式以项目当前 CMake 输出路径为准，例如：
 

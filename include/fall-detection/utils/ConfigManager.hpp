@@ -10,7 +10,7 @@ namespace fall_detection
         /**
          * @brief 全局配置管理器（单例）
          * 负责解析 configs/config.json，并以类型安全的方式向各模块分发运行参数。
-         * 所有 getter 均内置默认值，即使配置文件缺失或字段不全，系统也能安全启动。
+         * getter 内置默认值；主程序负责检查配置加载和关键模型、规则参数。
          */
         class ConfigManager
         {

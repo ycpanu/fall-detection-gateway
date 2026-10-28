@@ -91,6 +91,25 @@ target_link_libraries(fall_detection_gateway
     Threads::Threads
 )
 
+add_executable(local_database_test
+    tests/local_database_test.cpp
+    src/utils/LocalDatabase.cpp
+    src/utils/SysLogger.cpp
+)
+target_link_libraries(local_database_test
+    PRIVATE spdlog::spdlog ${SQLITE3_LIB} Threads::Threads
+)
+
+add_executable(video_uploader_test
+    tests/video_uploader_test.cpp
+    src/network/VideoUploader.cpp
+    src/utils/LocalDatabase.cpp
+    src/utils/SysLogger.cpp
+)
+target_link_libraries(video_uploader_test
+    PRIVATE spdlog::spdlog ${SQLITE3_LIB} Threads::Threads
+)
+
 # 允许共享库中存在未解析符号——这些符号在目标设备运行时由设备上的系统库提供
 target_link_options(
     fall_detection_gateway 

@@ -14,7 +14,10 @@ namespace fall_detection
             // 1. 优雅停止后台写盘线程，确保关机前队列中的 SQL 被全部执行完毕
             if (isRunning_)
             {
-                isRunning_ = false;
+                {
+                    std::lock_guard<std::mutex> lock(queueMtx_);
+                    isRunning_ = false;
+                }
                 cv_.notify_one();
                 if (workerThread_.joinable())
                 {
@@ -143,6 +146,7 @@ namespace fall_detection
 
         bool LocalDatabase::executeSQL(const std::string& sql)
         {
+            std::lock_guard<std::mutex> lock(dbMtx_);
             char* errMsg = nullptr;
             if (sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &errMsg) != SQLITE_OK)
             {
@@ -151,6 +155,23 @@ namespace fall_detection
                 return false;
             }
             return true;
+        }
+
+        bool LocalDatabase::executeQueuedSQL(std::string sql)
+        {
+            if (!isRunning_)
+                return false;
+
+            auto completion = std::make_shared<std::promise<bool>>();
+            auto written = completion->get_future();
+            {
+                std::lock_guard<std::mutex> lock(queueMtx_);
+                if (!isRunning_)
+                    return false;
+                sqlQueue_.push({std::move(sql), completion});
+            }
+            cv_.notify_one();
+            return written.get();
         }
 
         bool LocalDatabase::saveAlert(const event::AlertEvent& alertEvent)
@@ -325,16 +346,15 @@ namespace fall_detection
                 // 数据发生更新，需要重新同步云端
                 "upload_status = 'PENDING';";
 
-            // 5. 放入 SQLite 后台写入队列
+            // 等待 SQLite 真正提交后才允许 MQTT 发布，确保报警先落盘。
+            if (!executeQueuedSQL(std::move(insertSQL)))
             {
-                std::lock_guard<std::mutex> lock(queueMtx_);
-                sqlQueue_.push(std::move(insertSQL));
+                LOG_ERROR("报警事件本地落盘失败：event_id={}", alertEvent.eventId);
+                return false;
             }
 
-            cv_.notify_one();
-
             LOG_WARN(
-                "报警事件已进入本地持久化队列："
+                "报警事件已写入本地数据库："
                 "event_id={}, type={}, sources={}",
                 alertEvent.eventId,
                 event::toString(alertEvent.eventType),
@@ -373,6 +393,8 @@ namespace fall_detection
                 "ORDER BY id ASC;";
 
             sqlite3_stmt* stmt = nullptr;
+
+            std::lock_guard<std::mutex> dbLock(dbMtx_);
 
             if (sqlite3_prepare_v2(
                     db_,
@@ -535,12 +557,8 @@ namespace fall_detection
                 safeEventId +
                 "';";
 
-            {
-                std::lock_guard<std::mutex> lock(queueMtx_);
-                sqlQueue_.push(std::move(updateSQL));
-            }
-
-            cv_.notify_one();
+            if (!executeQueuedSQL(std::move(updateSQL)))
+                return false;
 
             LOG_INFO(
                 "报警事件已标记为已上传：event_id={}",
@@ -583,12 +601,8 @@ namespace fall_detection
                 "video_retry_count = 0 "
                 "WHERE event_id = '" + safeEventId + "';";
 
-            {
-                std::lock_guard<std::mutex> lock(queueMtx_);
-                sqlQueue_.push(std::move(sql));
-            }
-
-            cv_.notify_one();
+            if (!executeQueuedSQL(std::move(sql)))
+                return false;
 
             LOG_INFO(
                 "[VideoUpload] 视频进入待上传状态：event_id={}, path={}",
@@ -601,9 +615,9 @@ namespace fall_detection
 
         void LocalDatabase::dbWorkerLoop()
         {
-            while (isRunning_)
+            while (true)
             {
-                std::string sql;
+                SqlTask task;
                 
                 // 1. 阻塞等待 SQL 任务，零 CPU 消耗
                 {
@@ -615,12 +629,16 @@ namespace fall_detection
                         break;
                     }
 
-                    sql = std::move(sqlQueue_.front());
+                    task = std::move(sqlQueue_.front());
                     sqlQueue_.pop();
                 }
 
                 // 2. 在锁外执行极其耗时的底层磁盘 I/O 写入
-                executeSQL(sql);
+                const bool success = executeSQL(task.sql);
+                if (task.completion)
+                {
+                    task.completion->set_value(success);
+                }
             }
         }
 
@@ -640,6 +658,8 @@ namespace fall_detection
                 "ORDER BY id ASC;";
 
             sqlite3_stmt* stmt = nullptr;
+
+            std::lock_guard<std::mutex> dbLock(dbMtx_);
 
             if (sqlite3_prepare_v2(
                     db_,
@@ -709,12 +729,8 @@ namespace fall_detection
                 safeEventId +
                 "';";
 
-            {
-                std::lock_guard<std::mutex> lock(queueMtx_);
-                sqlQueue_.push(std::move(sql));
-            }
-
-            cv_.notify_one();
+            if (!executeQueuedSQL(std::move(sql)))
+                return false;
 
             LOG_INFO(
                 "[VideoUpload] 视频已标记上传完成：event_id={}",
@@ -746,14 +762,7 @@ namespace fall_detection
                 safeEventId +
                 "';";
 
-            {
-                std::lock_guard<std::mutex> lock(queueMtx_);
-                sqlQueue_.push(std::move(sql));
-            }
-
-            cv_.notify_one();
-
-            return true;
+            return executeQueuedSQL(std::move(sql));
         }
     }
 }

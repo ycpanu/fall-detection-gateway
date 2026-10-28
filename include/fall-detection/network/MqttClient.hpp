@@ -22,6 +22,7 @@ namespace fall_detection
             public:
                 // 定义回调函数类型，参数为（主题，消息内容）
                 using MessageCallback = std::function<void(const std::string& topic, const std::string& payload)>;
+                using ConnectionStateCallback = std::function<void(bool connected)>;
                 /**
                  * @brief 构造函数
                  * @param serverAddress MQTT 服务器/Broker 的地址 (例如 "tcp://broker.emqx.io:1883")
@@ -69,6 +70,7 @@ namespace fall_detection
 
                 // 设置消息接收回调函数
                 void setMessageCallback(MessageCallback callback);
+                void setConnectionStateCallback(ConnectionStateCallback callback);
 
                 // 订阅指定主题
                 bool subscribe(const std::string& topic, int qos = 1);
@@ -92,9 +94,14 @@ namespace fall_detection
 
                 // 保存外部传入的回调函数
                 MessageCallback messageCallback_;
+                ConnectionStateCallback connectionStateCallback_;
+                std::mutex connectionCallbackMtx_;
+                bool notifiedConnected_ = false;
 
                 std::vector<std::pair<std::string, int>> subscriptions_;
                 std::mutex subscriptionMtx_;
+
+                void notifyConnectionState(bool connected);
         };
     }
 }

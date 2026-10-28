@@ -51,11 +51,13 @@ namespace fall_detection
                 conntok->wait();
 
                 LOG_INFO("MQTT 服务器连接成功！");
+                notifyConnectionState(true);
                 return true;
             }
             catch (const mqtt::exception& exc)
             {
                 LOG_ERROR("MQTT 连接失败！错误信息：{}", exc.what());
+                notifyConnectionState(false);
                 return false;
             }
         }
@@ -179,6 +181,22 @@ namespace fall_detection
             messageCallback_ = cb;
         }
 
+        void MqttClient::setConnectionStateCallback(ConnectionStateCallback callback)
+        {
+            std::lock_guard<std::mutex> lock(connectionCallbackMtx_);
+            connectionStateCallback_ = std::move(callback);
+        }
+
+        void MqttClient::notifyConnectionState(bool connectedNow)
+        {
+            std::lock_guard<std::mutex> lock(connectionCallbackMtx_);
+            if (notifiedConnected_ == connectedNow)
+                return;
+            notifiedConnected_ = connectedNow;
+            if (connectionStateCallback_)
+                connectionStateCallback_(connectedNow);
+        }
+
         // 向云端发送订阅请求
         bool MqttClient::subscribe(const std::string& topic, int qos)
         {
@@ -249,6 +267,7 @@ namespace fall_detection
         void MqttClient::connection_lost(const std::string& cause)
         {
             LOG_WARN("MQTT 连接意外断开，原因：{}", cause);
+            notifyConnectionState(false);
         }
 
         void MqttClient::connected(const std::string& cause)
@@ -283,6 +302,7 @@ namespace fall_detection
                     LOG_ERROR("MQTT 恢复订阅失败: topic={}, error={}", item.first, exc.what());
                 }
             }
+            notifyConnectionState(true);
         }
 
         // 用于发送低负载的心跳包

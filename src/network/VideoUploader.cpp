@@ -1,9 +1,12 @@
 #include "fall-detection/network/VideoUploader.hpp"
 #include "fall-detection/utils/SysLogger.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace fall_detection
@@ -61,6 +64,22 @@ namespace fall_detection
 
         void VideoUploader::notifyNewTask()
         {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                wakeRequested_ = true;
+            }
+            cv_.notify_one();
+        }
+
+        void VideoUploader::setOnline(bool online)
+        {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const bool wasOnline = online_.exchange(online);
+                if (online && !wasOnline)
+                    ++connectionGeneration_;
+                wakeRequested_ = true;
+            }
             cv_.notify_one();
         }
 
@@ -139,36 +158,84 @@ namespace fall_detection
 
         void VideoUploader::workerLoop()
         {
+            using Clock = std::chrono::steady_clock;
+            std::unordered_map<std::string, Clock::time_point> nextAttempt;
+            std::unordered_map<std::string, unsigned int> failures;
+            unsigned long seenGeneration = 0;
+
             while (running_)
             {
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    cv_.wait(lock, [this]() { return !running_ || online_; });
+                    if (!running_) break;
+                    if (seenGeneration != connectionGeneration_)
+                    {
+                        nextAttempt.clear();
+                        failures.clear();
+                        seenGeneration = connectionGeneration_;
+                    }
+                    wakeRequested_ = false;
+                }
+
                 const auto pendingVideos =
                     database_.getPendingVideos();
 
+                std::unordered_set<std::string> pendingIds;
+                auto nextWake = Clock::now() + std::chrono::minutes(5);
+
                 for (const auto& video : pendingVideos)
                 {
-                    if (!running_)
+                    pendingIds.insert(video.eventId);
+                    if (!running_ || !online_)
                         break;
+
+                    const auto now = Clock::now();
+                    const auto due = nextAttempt.find(video.eventId);
+                    if (due != nextAttempt.end() && now < due->second)
+                    {
+                        nextWake = std::min(nextWake, due->second);
+                        continue;
+                    }
 
                     if (uploadVideo(video))
                     {
-                        database_.markVideoUploaded(
-                            video.eventId
-                        );
+                        if (database_.markVideoUploaded(video.eventId))
+                        {
+                            nextAttempt.erase(video.eventId);
+                            failures.erase(video.eventId);
+                            continue;
+                        }
                     }
                     else
                     {
-                        database_.incrementVideoRetry(
-                            video.eventId
-                        );
+                        database_.incrementVideoRetry(video.eventId);
                     }
+
+                    auto& failureCount = failures[video.eventId];
+                    failureCount = std::min(failureCount + 1, 6u);
+                    const auto delay = std::chrono::seconds(
+                        std::min(retryIntervalSeconds_ * (1 << (failureCount - 1)), 300));
+                    nextAttempt[video.eventId] = Clock::now() + delay;
+                    nextWake = std::min(nextWake, nextAttempt[video.eventId]);
+                }
+
+                for (auto it = nextAttempt.begin(); it != nextAttempt.end();)
+                {
+                    if (!pendingIds.count(it->first))
+                    {
+                        failures.erase(it->first);
+                        it = nextAttempt.erase(it);
+                    }
+                    else ++it;
                 }
 
                 std::unique_lock<std::mutex> lock(mutex_);
-
-                cv_.wait_for(
-                    lock,
-                    std::chrono::seconds(retryIntervalSeconds_)
-                );
+                cv_.wait_until(lock, nextWake, [this, seenGeneration]()
+                {
+                    return !running_ || !online_ || wakeRequested_ ||
+                        connectionGeneration_ != seenGeneration;
+                });
             }
         }
 

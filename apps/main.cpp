@@ -9,6 +9,12 @@
 #include <fstream>
 #include <string>
 #include <stdexcept>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
+#include <iterator>
 #include <opencv2/opencv.hpp>
 #include <nlohmann/json.hpp>
 
@@ -48,6 +54,7 @@ int main(int argc, char* argv[])
 {
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
+    std::signal(SIGPIPE, SIG_IGN);
 
     // 锚定系统工作目录，解决 Systemd 后台运行的路径问题
     char exePath[PATH_MAX];
@@ -68,7 +75,27 @@ int main(int argc, char* argv[])
 
     // 1. 初始化配置与全局日志
     auto& config = utils::ConfigManager::getInstance();
-    config.load("configs/config.json");
+    if (!config.load("configs/config.json"))
+    {
+        return 1;
+    }
+
+    // 配置缺失时 getter 会回退到默认值；跌倒确认时间和模型文件必须显式可用，
+    // 否则可能悄悄回到未验证的规则或旧模型。
+    const int suspectConfirmMs = config.getInt("rule_engine.suspect_confirm_ms", -1);
+    const int fallEventWindowMs = config.getInt("rule_engine.fall_event_window_ms", -1);
+    const std::string modelPath = config.getString("model.rknn_model_path", "");
+    if (suspectConfirmMs <= 0 || fallEventWindowMs < suspectConfirmMs)
+    {
+        std::cerr << "配置错误：rule_engine.suspect_confirm_ms 必须大于 0，"
+                     "fall_event_window_ms 不能小于它" << std::endl;
+        return 1;
+    }
+    if (modelPath.empty() || !std::ifstream(modelPath, std::ios::binary).good())
+    {
+        std::cerr << "配置错误：RKNN 模型不存在或无法读取：" << modelPath << std::endl;
+        return 1;
+    }
     
     utils::SysLogger::getInstance().init(config.getLogFilePath());
     utils::SysLogger::getInstance().setLevel(config.getLogLevel());
@@ -113,6 +140,41 @@ int main(int argc, char* argv[])
 
     network::LiveStreamer liveStreamer(640, 480, 30);
     network::MqttClient mqttClient(config.getMqttBroker(), config.getDeviceId(), config.getKeepAliveSeconds());
+
+    struct AlertRetrySignal
+    {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool wake = false;
+        bool everConnected = false;
+        unsigned long connectionGeneration = 0;
+        std::unordered_set<std::string> changedEventIds;
+    };
+    auto retrySignal = std::make_shared<AlertRetrySignal>();
+    auto wakeAlertRetry = [retrySignal](const std::string& eventId)
+    {
+        {
+            std::lock_guard<std::mutex> lock(retrySignal->mutex);
+            retrySignal->wake = true;
+            if (!eventId.empty())
+                retrySignal->changedEventIds.insert(eventId);
+        }
+        retrySignal->cv.notify_one();
+    };
+    mqttClient.setConnectionStateCallback([retrySignal, &videoUploader](bool connected)
+    {
+        {
+            std::lock_guard<std::mutex> lock(retrySignal->mutex);
+            retrySignal->wake = true;
+            if (connected)
+            {
+                retrySignal->everConnected = true;
+                ++retrySignal->connectionGeneration;
+            }
+        }
+        retrySignal->cv.notify_one();
+        videoUploader.setOnline(connected);
+    });
 
     const std::string cmdTopic =
         "fall_detection/commands/" +
@@ -436,7 +498,7 @@ int main(int argc, char* argv[])
     }
 
     // 3. 初始化核心视觉大脑 
-    vision::RKNNInferencer inferencer(config.getRknnModelPath(), config.getConfidenceThreshold(), config.getNmsThreshold());
+    vision::RKNNInferencer inferencer(modelPath, config.getConfidenceThreshold(), config.getNmsThreshold());
     if (!inferencer.init()) 
     {
         LOG_ERROR("致命错误：NPU 硬件加速推理模型加载失败，系统即将强制退出！");
@@ -614,7 +676,7 @@ int main(int argc, char* argv[])
     {
         LOG_INFO("[Alert] 报警处理线程已启动");
 
-        while (g_running)
+        while (g_running || !alertQueue.empty())
         {
             event::AlertEvent alertEvent;
 
@@ -658,7 +720,11 @@ int main(int argc, char* argv[])
                     "[Alert] 本地持久化失败：event_id={}",
                     alertEvent.eventId
                 );
+                continue;
             }
+
+            // SQLite 已完成写入；唤醒补传线程，由它统一负责 MQTT 发布。
+            wakeAlertRetry(alertEvent.eventId);
 
             // 4. 开始异步录像
             if (alertEvent.captureVideo)
@@ -676,38 +742,6 @@ int main(int argc, char* argv[])
                 );
             }
 
-            // 5. MQTT 上传报警信息
-            if (mqttClient.isConnected())
-            {
-                LOG_INFO(
-                    "[Alert] MQTT 在线，立即上报：event_id={}",
-                    alertEvent.eventId
-                );
-
-                if (mqttClient.publishAlert(config.getAlertTopic(), alertEvent))
-                {
-                    LOG_INFO(
-                        "[Alert] 报警已发送至 MQTT Broker，等待云端业务 ACK：event_id={}",
-                        alertEvent.eventId
-                    );
-                }
-                else
-                {
-                    LOG_WARN(
-                        "[Alert] 报警发送失败，保留 PENDING 等待补传：event_id={}",
-                        alertEvent.eventId
-                    );
-                }
-            }
-            else
-            {
-                // 同样不需要再调用 saveAlert，
-                // 因为前面已经保存过了。
-                LOG_WARN(
-                    "[Alert] MQTT 当前离线，报警已本地保存：event_id={}",
-                    alertEvent.eventId
-                );
-            }
         }
 
         LOG_INFO("[Alert] 报警处理线程已退出");
@@ -717,60 +751,73 @@ int main(int argc, char* argv[])
     {
         LOG_INFO("[Retry] 报警补传线程已启动");
 
+        constexpr auto RETRY_INTERVAL = std::chrono::seconds(60);
+        std::unordered_map<std::string, std::chrono::steady_clock::time_point> lastAttempt;
+        unsigned long seenGeneration = 0;
+
         while (g_running)
         {
-            if (mqttClient.isConnected())
             {
-                auto pendingAlerts = localDb.getPendingAlerts();
-
-                if (!pendingAlerts.empty())
+                std::unique_lock<std::mutex> lock(retrySignal->mutex);
+                if (!mqttClient.isConnected())
                 {
-                    LOG_INFO(
-                        "[Retry] 检测到 {} 条待补传报警",
-                        pendingAlerts.size()
-                    );
+                    // MQTT 自动重连成功后会主动唤醒；首次连接失败时低频补一次连接。
+                    const bool woke = retrySignal->cv.wait_for(
+                        lock, RETRY_INTERVAL,
+                        [&]() { return !g_running || retrySignal->wake; });
+                    retrySignal->wake = false;
+                    if (!g_running) break;
+                    if (!woke && !retrySignal->everConnected)
+                    {
+                        lock.unlock();
+                        mqttClient.connect();
+                    }
+                    continue;
                 }
-
-                for (const auto& alert : pendingAlerts)
+                if (seenGeneration != retrySignal->connectionGeneration)
                 {
-                    if (!g_running)
-                    {
-                        break;
-                    }
-
-                    LOG_INFO(
-                        "[Retry] 正在补传报警：event_id={}",
-                        alert.eventId
-                    );
-
-                    if (mqttClient.publishAlert(config.getAlertTopic(),alert))
-                    {
-                        LOG_INFO(
-                            "[Retry] 报警已重新发送至 Broker，等待云端业务 ACK：event_id={}",
-                            alert.eventId
-                        );
-                    }
-                    else
-                    {
-                        LOG_WARN(
-                            "[Retry] 报警补传发送失败，等待下次重试：event_id={}",
-                            alert.eventId
-                        );
-
-                        break;
-                    }
+                    lastAttempt.clear();
+                    seenGeneration = retrySignal->connectionGeneration;
                 }
+                for (const auto& eventId : retrySignal->changedEventIds)
+                    lastAttempt.erase(eventId);
+                retrySignal->changedEventIds.clear();
+                retrySignal->wake = false;
             }
 
-            // 每 3 秒检查一次，但 100ms 就能响应退出
-            for (int i = 0;
-                i < 30 && g_running;
-                ++i)
+            auto pendingAlerts = localDb.getPendingAlerts();
+            std::unordered_set<std::string> pendingIds;
+            for (const auto& alert : pendingAlerts)
             {
-                std::this_thread::sleep_for(
-                    std::chrono::milliseconds(100)
-                );
+                pendingIds.insert(alert.eventId);
+                if (!g_running || !mqttClient.isConnected())
+                {
+                    break;
+                }
+                const auto now = std::chrono::steady_clock::now();
+                const auto previous = lastAttempt.find(alert.eventId);
+                if (previous != lastAttempt.end() && now - previous->second < RETRY_INTERVAL)
+                {
+                    continue;
+                }
+                lastAttempt[alert.eventId] = now;
+
+                LOG_INFO("[Retry] 正在发送待确认报警：event_id={}", alert.eventId);
+                if (!mqttClient.publishAlert(config.getAlertTopic(), alert))
+                {
+                    LOG_WARN("[Retry] 发送失败，等待连接恢复或下次重试：event_id={}", alert.eventId);
+                    break;
+                }
             }
+            for (auto it = lastAttempt.begin(); it != lastAttempt.end();)
+            {
+                it = pendingIds.count(it->first) ? std::next(it) : lastAttempt.erase(it);
+            }
+
+            std::unique_lock<std::mutex> lock(retrySignal->mutex);
+            retrySignal->cv.wait_for(
+                lock, RETRY_INTERVAL,
+                [&]() { return !g_running || retrySignal->wake; });
         }
 
         LOG_INFO("[Retry] 报警补传线程已退出");
@@ -1005,7 +1052,12 @@ int main(int argc, char* argv[])
     }
     LOG_INFO("[Shutdown] alertThread 已退出");
 
+    LOG_INFO("[Shutdown] 正在等待事件视频编码完成...");
+    videoCacher.stopAndDrain();
+    LOG_INFO("[Shutdown] 事件视频编码已完成");
+
     LOG_INFO("[Shutdown] 正在等待 retryThread...");
+    wakeAlertRetry("");
     if (retryThread.joinable())
     {
         retryThread.join();

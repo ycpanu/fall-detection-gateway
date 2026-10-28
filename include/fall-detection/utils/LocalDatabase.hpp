@@ -8,6 +8,8 @@
 #include <queue>
 #include <mutex>
 #include <condition_variable>
+#include <future>
+#include <memory>
 #include "fall-detection/event/AlertEvent.hpp"
 
 namespace fall_detection
@@ -57,14 +59,22 @@ namespace fall_detection
 
         private:
             bool executeSQL(const std::string& sql);
+            bool executeQueuedSQL(std::string sql);
             void dbWorkerLoop();
+
+            struct SqlTask
+            {
+                std::string sql;
+                std::shared_ptr<std::promise<bool>> completion;
+            };
 
         private:
             std::string dbPath_;
             sqlite3* db_;
+            std::mutex dbMtx_;
             std::atomic<bool> isInitialized_{false};
 
-            std::queue<std::string> sqlQueue_;
+            std::queue<SqlTask> sqlQueue_;
             std::mutex queueMtx_;
             std::condition_variable cv_;
             std::thread workerThread_;

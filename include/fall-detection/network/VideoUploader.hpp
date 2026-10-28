@@ -30,6 +30,7 @@ public:
     // 新视频进入 PENDING 后立即唤醒线程，
     // 不需要等下一次定时检查。
     void notifyNewTask();
+    void setOnline(bool online);
 
 private:
     void workerLoop();
@@ -43,10 +44,13 @@ private:
     int retryIntervalSeconds_;
 
     std::atomic<bool> running_{false};
+    std::atomic<bool> online_{false};
+    std::atomic<unsigned long> connectionGeneration_{0};
     std::thread workerThread_;
 
     std::mutex mutex_;
     std::condition_variable cv_;
+    bool wakeRequested_ = false;
 };
 
 }
